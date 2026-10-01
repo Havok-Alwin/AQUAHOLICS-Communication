@@ -83,6 +83,24 @@ def check_vehicle_ids():
     return problems
 
 
+def check_sequences():
+    """Prove report sequence counters are independent per vehicle, then reset them."""
+    import sequence_manager
+    problems = []
+    ids = list(config.VEHICLE_IDS)
+    sequence_manager.reset_sequences()
+    try:
+        for index, vid in enumerate(ids, start=1):
+            for _ in range(index):
+                sequence_manager.next_report_sequence(vid)
+        for index, vid in enumerate(ids, start=1):
+            if sequence_manager.get_report_sequence(vid) != index:
+                problems.append(f"report sequence for {vid!r} is not independent")
+    finally:
+        sequence_manager.reset_sequences()
+    return problems
+
+
 if __name__ == "__main__":
     value, files = schema_hash()
     print(f"{value}  ({files} files in {GEN_PYTHON_PATH})")

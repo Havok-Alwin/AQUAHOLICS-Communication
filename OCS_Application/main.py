@@ -153,6 +153,11 @@ logger = get_logger()
 
 def output(message="", level="info"):
     """Best-effort operator output; display/log errors never escape into MQTT logic."""
+    global last_error_line
+    if isinstance(message, str) and message.startswith("[COMMAND]"):
+        record_command_status(message)
+    if isinstance(message, str) and message.startswith("[ERROR]"):
+        last_error_line = message[len("[ERROR]"):].strip()
     try:
         print(message, flush=True)
     except Exception:
@@ -193,6 +198,101 @@ heartbeat_thread_started = False
 
 
 processed_command_sequences = set()
+
+
+last_command_status = "none"
+last_error_line = ""
+command_counts = {"accepted": 0, "rejected": 0, "ignored": 0}
+
+
+def record_command_status(message):
+    """Remember the latest [COMMAND] line and count its outcome for the status line."""
+    global last_command_status
+    text = message[len("[COMMAND]"):].strip()
+    with state_lock:
+        last_command_status = text[:70]
+        for outcome in command_counts:
+            if text.startswith(outcome):
+                command_counts[outcome] += 1
+                break
+
+
+# ============================================================
+# PREFLIGHT CHECKLIST
+#
+# PASS    verified by the OCS
+# FAIL    checked and failed
+# WAIT    not checked yet
+# SKIP    cannot be checked (expected value not configured / loopback)
+# MANUAL  operator must verify; the OCS cannot
+# CONFIRM operator must confirm the value shown
+# ============================================================
+
+PREFLIGHT_ITEMS = [
+    ("dhcp", "RoboCommand-facing interface set to DHCP"),
+    ("bridge", "Bridging / Internet sharing disabled"),
+    ("subnet", "OCS address in assigned course subnet"),
+    ("gateway", "Default gateway = RoboCommand address"),
+    ("mqtt", "MQTT client connected"),
+    ("sub_course", "Subscribed to course topic"),
+    ("sub_command", "Subscribed to team command topic"),
+    ("rx_course", "Retained RxCourse received and decoded"),
+    ("course_check", "Course ID and boundary checked"),
+    ("schema", "Approved protobuf schema release"),
+    ("team", "Assigned team_id configured"),
+    ("vehicles", "Vehicle IDs unique and consistent"),
+    ("sequences", "Independent per-vehicle report sequences"),
+    ("geofence", "UAV geofence closed, inside course boundary"),
+    ("tiers", "Task tiers in RunDeclaration"),
+    ("visibility", "Operator sees connection / command status"),
+    ("logging", "Logging enabled for the run"),
+]
+
+preflight = {key: ("WAIT", "") for key, _ in PREFLIGHT_ITEMS}
+
+
+def set_preflight(key, status, detail=""):
+    with state_lock:
+        preflight[key] = (status, detail)
+    safe_log(logger, logging.INFO, "Preflight | %s=%s %s", key, status, detail)
+
+
+def preflight_summary():
+    """Return (passed, total, overall) for the status line."""
+    with state_lock:
+        values = [preflight[key][0] for key, _ in PREFLIGHT_ITEMS]
+    passed = values.count("PASS")
+    if "FAIL" in values:
+        overall = "FAIL"
+    elif "WAIT" in values or "SKIP" in values:
+        overall = "INCOMPLETE"
+    elif "MANUAL" in values or "CONFIRM" in values:
+        overall = "CONFIRM"
+    else:
+        overall = "READY"
+    return passed, len(values), overall
+
+
+def print_preflight(reason=""):
+    """One-screen pass/fail summary of the pre-run checklist; also logged."""
+    with state_lock:
+        snapshot = {key: preflight[key] for key, _ in PREFLIGHT_ITEMS}
+    passed, total, overall = preflight_summary()
+    lines = ["=" * 66,
+             f"PREFLIGHT CHECKLIST{' (' + reason + ')' if reason else ''}",
+             "=" * 66]
+    for number, (key, label) in enumerate(PREFLIGHT_ITEMS, start=1):
+        status, detail = snapshot[key]
+        text = f"{number:>2}. [{status:<7}] {label}"
+        if detail:
+            text += f" - {detail}"
+        lines.append(text[:120])
+    lines.append("-" * 66)
+    note = "  (MANUAL/CONFIRM items need the operator)" if overall == "CONFIRM" else ""
+    lines.append(f"{passed}/{total} verified | overall: {overall}{note}")
+    lines.append("=" * 66)
+    for line in lines:
+        output(line, "error" if "[FAIL" in line else "info")
 
 
 connection_count = 0
@@ -698,9 +798,13 @@ def send_run_declaration(
     if error:
         output(f"[ERROR] RunDeclaration BLOCKED: {error}", "error")
         safe_log(logger, logging.ERROR, "RunDeclaration blocked | %s", error)
+        set_preflight("geofence", "FAIL", error[:70])
+        print_preflight("RunDeclaration blocked")
         return
 
     output(f"[GEOFENCE] UAV geofence OK: closed, {len(geofence_points) - 1} points, inside course {course.course_id}")
+    set_preflight("geofence", "PASS", f"closed, {len(geofence_points) - 1} points, inside course")
+    print_preflight("RunDeclaration allowed")
 
 
     with state_lock:
@@ -1239,26 +1343,36 @@ def process_course(
 
     except (DecodeError, ValueError, TypeError) as error:
         output(f"[COURSE] rejected malformed protobuf topic={config.COURSE_TOPIC}: {error}", "error")
+        set_preflight("rx_course", "FAIL", "malformed protobuf")
+        print_preflight("course rejected")
         return
     except Exception as error:
         output(f"[COURSE] rejected due to decode error topic={config.COURSE_TOPIC}: {error}", "error")
+        set_preflight("rx_course", "FAIL", "decode error")
+        print_preflight("course rejected")
         return
 
 
     output(
         "[06] RxCourse decoded"
     )
+    set_preflight("rx_course", "PASS", f"course {course.course_id!r}")
 
 
     if not validate_course(
         course
     ):
 
+        reason = last_error_line
+
         output(
             "[ERROR] "
             "Course configuration rejected",
             "error"
         )
+
+        set_preflight("course_check", "FAIL", reason[:70])
+        print_preflight("course rejected")
 
         return
 
@@ -1276,6 +1390,11 @@ def process_course(
         "[07] "
         "Course configuration validated"
     )
+
+    if config.EXPECTED_COURSE_ID:
+        set_preflight("course_check", "PASS", f"id {course.course_id!r}, {len(course.corners)} corners")
+    else:
+        set_preflight("course_check", "SKIP", "boundary ok; course ID not compared (no --course-id)")
 
 
     output()
@@ -1351,6 +1470,7 @@ def on_connect(
 
 
     set_connection_state("Connected", f"broker={config.MQTT_BROKER}:{config.MQTT_PORT}")
+    set_preflight("mqtt", "PASS", f"{config.MQTT_BROKER}:{config.MQTT_PORT}")
     safe_log(logger, logging.INFO, "MQTT connected | broker=%s:%s connection=%s", config.MQTT_BROKER, config.MQTT_PORT, this_connection)
     if this_connection == 1:
 
@@ -1396,6 +1516,10 @@ def on_connect(
 
         )
     )
+
+
+    set_preflight("sub_course", "PASS" if course_result == mqtt.MQTT_ERR_SUCCESS else "FAIL", config.COURSE_TOPIC)
+    set_preflight("sub_command", "PASS" if command_result == mqtt.MQTT_ERR_SUCCESS else "FAIL", config.COMMAND_TOPIC)
 
 
     if this_connection == 1:
@@ -1454,6 +1578,7 @@ def on_disconnect(
 
     else:
         set_connection_state("Reconnecting", f"connection lost reason={reason_code}")
+        set_preflight("mqtt", "FAIL", "connection lost")
         safe_log(logger, logging.WARNING, "MQTT connection lost | reason=%s", reason_code)
 
         output()
@@ -1777,6 +1902,8 @@ def check_network(broker):
     interface, local_ip = local_route_info(broker)
     gateway = discover_default_gateway()
     problems = []
+    subnet_problems = []
+    gateway_problems = []
 
     try:
         loopback = ipaddress.ip_address(broker).is_loopback or broker == "localhost"
@@ -1787,23 +1914,33 @@ def check_network(broker):
         report = (interface or "lo", local_ip or "127.0.0.1", gateway, [])
     else:
         if not local_ip:
-            problems.append("no local IP address found on the route to the broker")
+            subnet_problems.append("no local IP address found on the route to the broker")
         else:
             addr = ipaddress.ip_address(local_ip)
             if addr.is_link_local:
-                problems.append(f"local IP {local_ip} is link-local (169.254.x.x): DHCP lease not received")
+                subnet_problems.append(f"local IP {local_ip} is link-local (169.254.x.x): DHCP lease not received")
             if config.EXPECTED_SUBNET:
                 try:
                     if addr not in ipaddress.ip_network(config.EXPECTED_SUBNET, strict=False):
-                        problems.append(f"local IP {local_ip} is not in expected subnet {config.EXPECTED_SUBNET}")
+                        subnet_problems.append(f"local IP {local_ip} is not in expected subnet {config.EXPECTED_SUBNET}")
                 except ValueError:
-                    problems.append(f"invalid expected subnet {config.EXPECTED_SUBNET!r}")
+                    subnet_problems.append(f"invalid expected subnet {config.EXPECTED_SUBNET!r}")
         if config.EXPECTED_ROBOCOMMAND_IP:
             if gateway != config.EXPECTED_ROBOCOMMAND_IP:
-                problems.append(f"default gateway {gateway} != expected RoboCommand IP {config.EXPECTED_ROBOCOMMAND_IP}")
+                gateway_problems.append(f"default gateway {gateway} != expected RoboCommand IP {config.EXPECTED_ROBOCOMMAND_IP}")
             if broker != config.EXPECTED_ROBOCOMMAND_IP:
-                problems.append(f"broker {broker} != expected RoboCommand IP {config.EXPECTED_ROBOCOMMAND_IP}")
+                gateway_problems.append(f"broker {broker} != expected RoboCommand IP {config.EXPECTED_ROBOCOMMAND_IP}")
+        problems = subnet_problems + gateway_problems
         report = (interface, local_ip, gateway, problems)
+
+    if loopback:
+        set_preflight("subnet", "SKIP", "loopback broker")
+        set_preflight("gateway", "SKIP", "loopback broker")
+    else:
+        set_preflight("subnet", "FAIL" if subnet_problems else ("PASS" if config.EXPECTED_SUBNET else "SKIP"),
+                      subnet_problems[0][:60] if subnet_problems else (f"{local_ip} in {config.EXPECTED_SUBNET}" if config.EXPECTED_SUBNET else "no --subnet given"))
+        set_preflight("gateway", "FAIL" if gateway_problems else ("PASS" if config.EXPECTED_ROBOCOMMAND_IP else "SKIP"),
+                      gateway_problems[0][:60] if gateway_problems else (f"gateway {gateway}" if config.EXPECTED_ROBOCOMMAND_IP else "no --robocommand-ip given"))
 
     if report != last_network_report:
         last_network_report = report
@@ -1822,6 +1959,8 @@ def check_network(broker):
                 safe_log(logger, logging.ERROR, "Network check failed | %s", problem)
             if not problems:
                 output("[NETWORK] network checks passed")
+        if problems:
+            print_preflight("network check failed")
 
     if problems and config.NETWORK_STRICT and not config.LOCAL_TEST_MODE:
         return False
@@ -1870,7 +2009,27 @@ def run_startup_checks():
         output(f"[VEHICLES] IDs OK: {', '.join(config.VEHICLE_IDS)} "
                f"(used in RunDeclaration and report topics, e.g. {config.report_topic(config.VEHICLE_IDS[0])})")
 
-    blocking = False
+    seq_problems = [] if id_problems else startup_checks.check_sequences()
+
+    set_preflight("schema", "FAIL" if schema_problems else ("SKIP" if any(l.startswith("WARNING") for l in schema_info) else "PASS"),
+                  schema_problems[0][:60] if schema_problems else "sha256 " + schema_info[0].split("sha256=")[-1][:12])
+    set_preflight("vehicles", "FAIL" if id_problems else "PASS",
+                  id_problems[0][:60] if id_problems else ", ".join(config.VEHICLE_IDS))
+    set_preflight("sequences", "FAIL" if (id_problems or seq_problems) else "PASS",
+                  "fix vehicle IDs first" if id_problems else (seq_problems[0] if seq_problems else
+                  "independent counter per vehicle verified"))
+    set_preflight("team", "CONFIRM", f"{config.TEAM_ID}" + ("" if os.getenv("ROBOTX_TEAM_ID") else " (default from config.py)"))
+    set_preflight("tiers", "CONFIRM", f"{config.TASK1_TIER}/{config.TASK2_TIER}/{config.TASK3_TIER}/{config.TASK4_TIER}")
+    set_preflight("visibility", "PASS", "status line every 5 s")
+    file_logging = any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+    set_preflight("logging", "PASS" if file_logging else "FAIL",
+                  config.OCS_LOG_DIR if file_logging else "log file could not be opened")
+    set_preflight("dhcp", "MANUAL", "operator must verify")
+    set_preflight("bridge", "MANUAL", "operator must verify")
+
+    blocking = bool(seq_problems)
+    for problem in seq_problems:
+        output(f"[VEHICLES] CHECK FAILED: {problem}", "error")
     for problem in id_problems:
         output(f"[VEHICLES] CHECK FAILED: {problem}", "error")
         safe_log(logger, logging.ERROR, "Vehicle ID check failed | %s", problem)
@@ -1969,7 +2128,12 @@ def main():
             if now - last_status_report >= 5:
                 with state_lock:
                     current_state = connection_state
-                output(f"[MQTT CURRENT STATE] {current_state} | run={run_id or 'not-started'} | dropped_messages={message_queue_dropped} | stale_messages={message_queue_stale}")
+                    command_text = last_command_status
+                    counts = dict(command_counts)
+                passed, total, overall = preflight_summary()
+                output(f"[MQTT CURRENT STATE] {current_state} | run={run_id or 'not-started'} | "
+                       f"command: {command_text} (ok={counts['accepted']} rejected={counts['rejected']} ignored={counts['ignored']}) | "
+                       f"preflight {passed}/{total} {overall} | dropped_messages={message_queue_dropped} | stale_messages={message_queue_stale}")
                 last_status_report = now
 
 

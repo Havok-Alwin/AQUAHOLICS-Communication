@@ -111,6 +111,19 @@ free of whitespace and MQTT wildcard characters, equal to `[USV_ID, UAV_ID]`,
 and round-trip through their report topic; `RunDeclaration` and heartbeats
 both use the single `VEHICLE_IDS` list. A failure stops the OCS.
 
+### Preflight checklist and status line
+
+When the course decision is made (`RunDeclaration` allowed or blocked, course
+rejected, or a network check failed) the OCS prints a one-screen checklist of
+the 17 pre-run items and logs each result. Statuses: `PASS` (verified),
+`FAIL`, `WAIT` (not checked yet), `SKIP` (cannot check: expected value not
+given or loopback broker), `MANUAL` (DHCP mode, bridging/Internet sharing:
+operator must verify) and `CONFIRM` (team ID and task tiers: operator must
+confirm the value shown). The 5-second status line shows the connection state,
+the last command and its outcome counts, and the checklist summary, for example
+`[MQTT CURRENT STATE] Connected | run=1 | command: accepted RunStart seq=1
+(ok=1 rejected=0 ignored=0) | preflight 13/17 CONFIRM | ...`.
+
 ## Network setup
 
 By default the OCS discovers the DHCP-provided IPv4 default gateway and uses it

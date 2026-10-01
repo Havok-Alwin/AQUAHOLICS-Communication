@@ -12,6 +12,67 @@
 
 import os
 import sys
+import argparse
+import ipaddress
+import json
+
+
+# ============================================================
+# COMMAND-LINE FLAGS
+#
+# Flags are translated to the ROBOTX_* environment variables that
+# config.py reads, so this must run before `import config`.
+# ============================================================
+
+def apply_cli_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="AQUAHOLICS RobotX 2026 OCS. Default is REAL mode: no simulated "
+                    "telemetry/reports/Task 4 responses and no localhost fallback; "
+                    "the OCS waits for the DHCP default gateway (RoboCommand).",
+        epilog="""examples:
+  python3 main.py --team-id RMKE --subnet 192.168.10.0/24 --robocommand-ip 192.168.10.1
+  python3 main.py --task1-tier core --task2-tier disruptive --task3-tier disruptive --task4-tier disruptive
+
+Flags override ROBOTX_* environment variables. Other options (ROBOTX_LOCAL_TEST,
+ROBOTX_BROKER, ROBOTX_PORT, ROBOTX_NETWORK_STRICT, ...) are environment-only.""",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--subnet", metavar="CIDR",
+                        help="expected course subnet, e.g. 192.168.10.0/24 (ROBOTX_SUBNET)")
+    parser.add_argument("--robocommand-ip", metavar="IP",
+                        help="expected RoboCommand IP = default gateway (ROBOTX_ROBOCOMMAND_IP)")
+    parser.add_argument("--course-id", metavar="ID",
+                        help="expected course ID; a different received course_id is rejected (ROBOTX_COURSE_ID)")
+    parser.add_argument("--uav-geofence", metavar="FILE",
+                        help="JSON file with the closed UAV geofence as [[lat, lon], ...] (ROBOTX_UAV_GEOFENCE)")
+    parser.add_argument("--team-id", metavar="ID",
+                        help="assigned team ID (ROBOTX_TEAM_ID, default from config.py)")
+    tiers = ["none", "core", "advanced", "disruptive"]
+    for n in range(1, 5):
+        parser.add_argument(f"--task{n}-tier", choices=tiers, metavar="TIER",
+                            help=f"Task {n} tier: {'|'.join(tiers)} (ROBOTX_TASK{n}_TIER)")
+    args = parser.parse_args(argv)
+
+    env = os.environ
+    if args.subnet:
+        env["ROBOTX_SUBNET"] = args.subnet
+    if args.robocommand_ip:
+        env["ROBOTX_ROBOCOMMAND_IP"] = args.robocommand_ip
+    if args.course_id:
+        env["ROBOTX_COURSE_ID"] = args.course_id
+    if args.uav_geofence:
+        env["ROBOTX_UAV_GEOFENCE"] = args.uav_geofence
+    if args.team_id:
+        env["ROBOTX_TEAM_ID"] = args.team_id
+    for n in range(1, 5):
+        value = getattr(args, f"task{n}_tier")
+        if value:
+            env[f"ROBOTX_TASK{n}_TIER"] = value
+
+
+if __name__ == "__main__":
+    apply_cli_args()
+
 import time
 import threading
 import queue
@@ -120,6 +181,8 @@ run_declaration_sent = False
 
 declaration_seq = None
 
+validated_course = None
+
 run_started = False
 
 run_id = None
@@ -201,6 +264,40 @@ def tier_value(name):
 # COURSE VALIDATION
 # ============================================================
 
+def _segments_cross(p1, p2, p3, p4):
+    """True if open segments p1-p2 and p3-p4 properly intersect."""
+    def orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    d1, d2 = orient(p3, p4, p1), orient(p3, p4, p2)
+    d3, d4 = orient(p1, p2, p3), orient(p1, p2, p4)
+    return d1 * d2 < 0 and d3 * d4 < 0
+
+
+def boundary_problem(corners):
+    """Return a description of why the boundary is unusable, or None if it is fine."""
+    points = [(c.latitude, c.longitude) for c in corners]
+    if len(points) > 1 and points[0] == points[-1]:
+        points = points[:-1]      # an explicitly closed ring repeats its first point
+    if len(points) < 3:
+        return f"boundary needs at least 3 corners (got {len(points)})"
+    if len(set(points)) != len(points):
+        return "boundary has duplicate corners"
+    count = len(points)
+    for i in range(count):
+        for j in range(i + 1, count):
+            if j == i + 1 or (i == 0 and j == count - 1):
+                continue          # adjacent edges share a corner
+            if _segments_cross(points[i], points[(i + 1) % count],
+                               points[j], points[(j + 1) % count]):
+                return "boundary is self-intersecting"
+    area2 = sum(points[i][0] * points[(i + 1) % len(points)][1]
+                - points[(i + 1) % len(points)][0] * points[i][1]
+                for i in range(len(points)))
+    if abs(area2) < 1e-12:
+        return "boundary is degenerate (zero area / collinear corners)"
+    return None
+
+
 def validate_course(course):
 
     if not course.course_id:
@@ -211,6 +308,27 @@ def validate_course(course):
         )
 
         return False
+
+
+    if config.EXPECTED_COURSE_ID:
+
+        if course.course_id != config.EXPECTED_COURSE_ID:
+
+            output(
+                f"[ERROR] course_id {course.course_id!r} != "
+                f"expected {config.EXPECTED_COURSE_ID!r}",
+                "error"
+            )
+
+            return False
+
+    else:
+
+        output(
+            "[COURSE] WARNING: expected course ID not configured "
+            "(--course-id); comparison skipped",
+            "warning"
+        )
 
 
     if len(course.corners) == 0:
@@ -263,6 +381,18 @@ def validate_course(course):
             )
 
             return False
+
+
+    problem = boundary_problem(course.corners)
+
+    if problem:
+
+        output(
+            f"[ERROR] {problem}",
+            "error"
+        )
+
+        return False
 
 
     if not course.HasField(
@@ -471,6 +601,74 @@ def start_heartbeats(
 # RUN DECLARATION
 # ============================================================
 
+def _on_segment(p, a, b, eps=1e-12):
+    cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+    if abs(cross) > eps:
+        return False
+    return (min(a[0], b[0]) - eps <= p[0] <= max(a[0], b[0]) + eps
+            and min(a[1], b[1]) - eps <= p[1] <= max(a[1], b[1]) + eps)
+
+
+def point_in_polygon(point, polygon):
+    """Ray-casting test; a point on the polygon's edge counts as inside."""
+    count = len(polygon)
+    inside = False
+    for i in range(count):
+        a, b = polygon[i], polygon[(i + 1) % count]
+        if _on_segment(point, a, b):
+            return True
+        if (a[1] > point[1]) != (b[1] > point[1]):
+            x = a[0] + (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+            if point[0] < x:
+                inside = not inside
+    return inside
+
+
+def load_uav_geofence(course):
+    """Return (points, error). points is a list of (lat, lon) tuples."""
+    if config.UAV_GEOFENCE_FILE:
+        try:
+            with open(config.UAV_GEOFENCE_FILE, encoding="utf-8") as handle:
+                data = json.load(handle)
+            return [(float(lat), float(lon)) for lat, lon in data], None
+        except (OSError, ValueError, TypeError) as error:
+            return None, f"cannot read UAV geofence file {config.UAV_GEOFENCE_FILE!r}: {error}"
+    if config.LOCAL_TEST_MODE and course is not None:
+        # Local test only: the course shrunk to 50% about its centre.
+        ring = [(c.latitude, c.longitude) for c in course.corners]
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring = ring[:-1]
+        lat0 = sum(p[0] for p in ring) / len(ring)
+        lon0 = sum(p[1] for p in ring) / len(ring)
+        shrunk = [(lat0 + 0.5 * (a - lat0), lon0 + 0.5 * (b - lon0)) for a, b in ring]
+        return shrunk + [shrunk[0]], None
+    return None, "no UAV geofence configured (--uav-geofence FILE)"
+
+
+def geofence_problem(geofence, course_corners):
+    """Return why the geofence is unusable for this course, or None if it is fine."""
+    if len(geofence) < 4:
+        return f"geofence needs at least 3 distinct points plus the closing point (got {len(geofence)} points)"
+    if geofence[0] != geofence[-1]:
+        return "geofence is not closed (first point must equal last point)"
+    ring = geofence[:-1]
+    problem = boundary_problem([type("P", (), {"latitude": a, "longitude": b}) for a, b in ring])
+    if problem:
+        return f"geofence invalid: {problem}"
+    course = [(c.latitude, c.longitude) for c in course_corners]
+    if len(course) > 1 and course[0] == course[-1]:
+        course = course[:-1]
+    for index, point in enumerate(ring, start=1):
+        if not point_in_polygon(point, course):
+            return f"geofence point {index} {point} is outside the course boundary"
+    for i in range(len(ring)):
+        for j in range(len(course)):
+            if _segments_cross(ring[i], ring[(i + 1) % len(ring)],
+                               course[j], course[(j + 1) % len(course)]):
+                return f"geofence edge {i + 1} crosses the course boundary"
+    return None
+
+
 def send_run_declaration(
     client
 ):
@@ -485,6 +683,30 @@ def send_run_declaration(
 
             return
 
+        course = validated_course
+
+
+    geofence_points, error = load_uav_geofence(course)
+
+    if not error and course is None:
+        error = "no validated course to check the UAV geofence against"
+
+    if not error:
+        error = geofence_problem(geofence_points, course.corners)
+
+    if error:
+        output(f"[ERROR] RunDeclaration BLOCKED: {error}", "error")
+        safe_log(logger, logging.ERROR, "RunDeclaration blocked | %s", error)
+        return
+
+    output(f"[GEOFENCE] UAV geofence OK: closed, {len(geofence_points) - 1} points, inside course {course.course_id}")
+
+
+    with state_lock:
+
+        if run_declaration_sent:
+
+            return
 
         declaration_seq = (
             next_request_sequence()
@@ -502,7 +724,7 @@ def send_run_declaration(
         )
 
         for latitude, longitude
-        in config.LOCAL_UAV_GEOFENCE
+        in geofence_points
 
     ]
 
@@ -993,6 +1215,12 @@ def process_command(
 # RxCourse PROCESSING
 # ============================================================
 
+def get_validated_course():
+    """Latest RxCourse that passed validation, or None."""
+    with state_lock:
+        return validated_course
+
+
 def process_course(
     client,
     payload
@@ -1036,6 +1264,15 @@ def process_course(
 
         return
 
+
+    global validated_course
+
+    with state_lock:
+
+        validated_course = course
+
+    safe_log(logger, logging.INFO, "Course validated | course_id=%s corners=%s pinger_hz=%s",
+             course.course_id, len(course.corners), course.pinger_freq_hz)
 
     output(
         "[07] "
@@ -1386,6 +1623,11 @@ def connect_with_retry(
                 stop_event.wait(2)
                 continue
 
+            if not check_network(config.MQTT_BROKER):
+                set_connection_state("Waiting for network", "network check failed")
+                stop_event.wait(2)
+                continue
+
             set_connection_state("Connecting", f"broker={config.MQTT_BROKER}:{config.MQTT_PORT}")
             output(f"Connecting to MQTT broker {config.MQTT_BROKER}:{config.MQTT_PORT}...")
 
@@ -1498,6 +1740,96 @@ def discover_default_gateway():
     return None
 
 
+def local_route_info(broker):
+    """Return (interface, local_ip) the OS would use to reach the broker."""
+    interface, local_ip = None, None
+    try:
+        result = subprocess.run(["ip", "-4", "route", "get", broker], capture_output=True,
+                                text=True, timeout=3, check=False)
+        fields = result.stdout.split()
+        if "dev" in fields:
+            interface = fields[fields.index("dev") + 1]
+        if "src" in fields:
+            local_ip = fields[fields.index("src") + 1]
+    except (OSError, subprocess.SubprocessError, IndexError):
+        pass
+    if not local_ip:
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                probe.connect((broker, config.MQTT_PORT))
+                local_ip = probe.getsockname()[0]
+            finally:
+                probe.close()
+        except OSError:
+            pass
+    return interface, local_ip
+
+
+last_network_report = None
+
+
+def check_network(broker):
+    """Verify the course network. Returns True when the connection may proceed.
+
+    DHCP mode, bridging and Internet sharing cannot be verified here and stay
+    manual operator checks.
+    """
+    global last_network_report
+    interface, local_ip = local_route_info(broker)
+    gateway = discover_default_gateway()
+    problems = []
+
+    try:
+        loopback = ipaddress.ip_address(broker).is_loopback or broker == "localhost"
+    except ValueError:
+        loopback = broker == "localhost"
+
+    if loopback:
+        report = (interface or "lo", local_ip or "127.0.0.1", gateway, [])
+    else:
+        if not local_ip:
+            problems.append("no local IP address found on the route to the broker")
+        else:
+            addr = ipaddress.ip_address(local_ip)
+            if addr.is_link_local:
+                problems.append(f"local IP {local_ip} is link-local (169.254.x.x): DHCP lease not received")
+            if config.EXPECTED_SUBNET:
+                try:
+                    if addr not in ipaddress.ip_network(config.EXPECTED_SUBNET, strict=False):
+                        problems.append(f"local IP {local_ip} is not in expected subnet {config.EXPECTED_SUBNET}")
+                except ValueError:
+                    problems.append(f"invalid expected subnet {config.EXPECTED_SUBNET!r}")
+        if config.EXPECTED_ROBOCOMMAND_IP:
+            if gateway != config.EXPECTED_ROBOCOMMAND_IP:
+                problems.append(f"default gateway {gateway} != expected RoboCommand IP {config.EXPECTED_ROBOCOMMAND_IP}")
+            if broker != config.EXPECTED_ROBOCOMMAND_IP:
+                problems.append(f"broker {broker} != expected RoboCommand IP {config.EXPECTED_ROBOCOMMAND_IP}")
+        report = (interface, local_ip, gateway, problems)
+
+    if report != last_network_report:
+        last_network_report = report
+        output(f"[NETWORK] interface={interface or 'unknown'} ip={local_ip} gateway={gateway} broker={broker}")
+        safe_log(logger, logging.INFO, "Network | interface=%s ip=%s gateway=%s broker=%s subnet=%s robocommand_ip=%s",
+                 interface, local_ip, gateway, broker, config.EXPECTED_SUBNET, config.EXPECTED_ROBOCOMMAND_IP)
+        if loopback:
+            output("[NETWORK] loopback broker: course network checks skipped")
+        else:
+            if not config.EXPECTED_SUBNET or not config.EXPECTED_ROBOCOMMAND_IP:
+                output("[NETWORK] WARNING: expected subnet / RoboCommand IP not configured "
+                       "(--subnet, --robocommand-ip); those checks skipped", "warning")
+            output("[NETWORK] Manual checks: interface is DHCP, bridging off, Internet sharing off")
+            for problem in problems:
+                output(f"[NETWORK] CHECK FAILED: {problem}", "error")
+                safe_log(logger, logging.ERROR, "Network check failed | %s", problem)
+            if not problems:
+                output("[NETWORK] network checks passed")
+
+    if problems and config.NETWORK_STRICT and not config.LOCAL_TEST_MODE:
+        return False
+    return True
+
+
 def network_ready():
     """Return true once the broker resolves and the OS has a usable route.
 
@@ -1567,6 +1899,16 @@ def main():
         )
 
 
+    output(f"     team_id = {config.TEAM_ID}")
+    output(f"     vehicles = {', '.join(config.VEHICLE_IDS)}")
+    output(f"     task1 = {config.TASK1_TIER.upper()}")
+    output(f"     task2 = {config.TASK2_TIER.upper()}")
+    output(f"     task3 = {config.TASK3_TIER.upper()}")
+    output(f"     task4 = {config.TASK4_TIER.upper()}")
+    output("     >>> Operator: confirm team_id and task tiers above before the run <<<")
+    safe_log(logger, logging.INFO, "Startup config | team=%s vehicles=%s tiers=%s/%s/%s/%s local_test=%s",
+             config.TEAM_ID, config.VEHICLE_IDS, config.TASK1_TIER, config.TASK2_TIER,
+             config.TASK3_TIER, config.TASK4_TIER, config.LOCAL_TEST_MODE)
     output()
 
 

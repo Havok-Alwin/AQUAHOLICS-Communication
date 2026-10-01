@@ -75,6 +75,18 @@ EXPECTED_COURSE_ID = os.getenv("ROBOTX_COURSE_ID") or None
 
 
 # ============================================================
+# PROTOBUF SCHEMA
+#
+# SHA-256 of the approved generated protobuf files. In real mode a
+# different schema blocks startup. Print the current value with
+#     python3 startup_checks.py
+# and update this when a new schema release is approved.
+# ============================================================
+
+APPROVED_SCHEMA_HASH = os.getenv("ROBOTX_SCHEMA_HASH") or "d3252516e0e760662807a886fff386a49301ed9ef4f4d3ead2f7ce0cf3584fc9"
+
+
+# ============================================================
 # RECONNECT
 # ============================================================
 

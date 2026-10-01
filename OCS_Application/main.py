@@ -125,6 +125,7 @@ from google.protobuf.timestamp_pb2 import (
 
 
 import config
+import startup_checks
 
 from logger import get_logger, safe_log
 
@@ -732,10 +733,7 @@ def send_run_declaration(
     declaration = (
         rx_requests_pb2.RunDeclaration(
 
-            vehicle_ids=[
-                config.USV_ID,
-                config.UAV_ID
-            ],
+            vehicle_ids=list(config.VEHICLE_IDS),
 
 
             task1_tier=
@@ -1860,6 +1858,36 @@ def network_ready():
 # MAIN
 # ============================================================
 
+def run_startup_checks():
+    """Schema and vehicle ID checks. Returns False when the OCS must not start."""
+    schema_info, schema_problems = startup_checks.check_schema()
+    for line in schema_info:
+        output(f"[SCHEMA] {line}", "warning" if line.startswith("WARNING") else "info")
+        safe_log(logger, logging.INFO, "Schema | %s", line)
+
+    id_problems = startup_checks.check_vehicle_ids()
+    if not id_problems:
+        output(f"[VEHICLES] IDs OK: {', '.join(config.VEHICLE_IDS)} "
+               f"(used in RunDeclaration and report topics, e.g. {config.report_topic(config.VEHICLE_IDS[0])})")
+
+    blocking = False
+    for problem in id_problems:
+        output(f"[VEHICLES] CHECK FAILED: {problem}", "error")
+        safe_log(logger, logging.ERROR, "Vehicle ID check failed | %s", problem)
+        blocking = True
+    for problem in schema_problems:
+        if config.LOCAL_TEST_MODE:
+            output(f"[SCHEMA] WARNING: {problem}", "warning")
+        else:
+            output(f"[SCHEMA] CHECK FAILED: {problem}", "error")
+            blocking = True
+        safe_log(logger, logging.ERROR, "Schema check failed | %s", problem)
+
+    if blocking:
+        output("[STARTUP] Startup checks failed; OCS not started.", "error")
+    return not blocking
+
+
 def main():
 
     output(
@@ -1897,6 +1925,10 @@ def main():
             "     Real vehicle telemetry adapter "
             "still required."
         )
+
+
+    if not run_startup_checks():
+        return
 
 
     output(f"     team_id = {config.TEAM_ID}")

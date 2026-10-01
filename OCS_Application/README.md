@@ -98,6 +98,19 @@ cross the boundary). If any check fails, or no geofence is configured, the
 again. In local test mode with no file, a test geofence is derived from the course
 (shrunk to 50% about its centre) so the simulator courses work.
 
+### Schema and vehicle ID checks
+
+At startup the OCS hashes the generated protobuf files
+(`../Robocmd_Application/gen/python`) and compares the SHA-256 with
+`APPROVED_SCHEMA_HASH` in `config.py`; the hash and protobuf runtime version
+are printed and logged. A mismatch blocks startup in real mode (warning in
+local test mode). Print the current hash with `python3 startup_checks.py`, and
+update `APPROVED_SCHEMA_HASH` when a new schema release is approved
+(`ROBOTX_SCHEMA_HASH` overrides it). The vehicle IDs must be non-empty, unique,
+free of whitespace and MQTT wildcard characters, equal to `[USV_ID, UAV_ID]`,
+and round-trip through their report topic; `RunDeclaration` and heartbeats
+both use the single `VEHICLE_IDS` list. A failure stops the OCS.
+
 ## Network setup
 
 By default the OCS discovers the DHCP-provided IPv4 default gateway and uses it
@@ -130,6 +143,7 @@ bridging is off, and Internet sharing is off.
   settings, topics, and local test settings.
 - `sequence_manager.py` — request and per-vehicle report sequence counters.
 - `task_reports.py` — task report message builders and MQTT publishing.
+- `startup_checks.py` — protobuf schema hash and vehicle ID checks.
 - `logger.py` — best-effort session logging.
 - `../Robocmd_Application/gen/python/` — generated protobuf classes used by the
   OCS; the application adds this directory to its Python import path.

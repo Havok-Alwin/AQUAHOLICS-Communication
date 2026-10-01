@@ -223,20 +223,35 @@ class RoboCommandSimulator:
         report.ParseFromString(payload)
         topic_team, topic_vehicle = topic_parts[2], topic_parts[3]
         if report.team_id != topic_team or report.vehicle_id != topic_vehicle:
+            # Protocol violation — worth a visible error.
             raise ValueError("report topic team/vehicle does not match RxReport envelope")
+        ts = time.strftime("%H:%M:%S")
         team = self.teams.get(report.team_id)
         if team is None:
-            raise ValueError(f"report from {report.team_id} before RunDeclaration")
+            self._report_log.append(
+                f"{ts} [pre-decl] RxReport: team={report.team_id} vehicle={report.vehicle_id}"
+                f" seq={report.seq} (no RunDeclaration yet — ignored)"
+            )
+            return
         if report.vehicle_id not in team.vehicles:
-            raise ValueError(f"report vehicle {report.vehicle_id} absent from RunDeclaration")
+            self._report_log.append(
+                f"{ts} [unknown-vehicle] RxReport: team={report.team_id}"
+                f" vehicle={report.vehicle_id} not in RunDeclaration — ignored"
+            )
+            return
         previous = team.report_sequences.get(report.vehicle_id, 0)
         if report.seq <= previous:
-            raise ValueError(f"stale report seq={report.seq} for {report.vehicle_id}; last={previous}")
+            self._report_log.append(
+                f"{ts} [stale] RxReport: team={report.team_id} vehicle={report.vehicle_id}"
+                f" seq={report.seq} <= last={previous} — ignored"
+            )
+            return
         team.report_sequences[report.vehicle_id] = report.seq
         body = report.WhichOneof("body")
-        entry = (f"{time.strftime('%H:%M:%S')} RxReport: team={report.team_id}"
-                 f" vehicle={report.vehicle_id} seq={report.seq} body={body}")
-        self._report_log.append(entry)
+        self._report_log.append(
+            f"{ts} RxReport: team={report.team_id} vehicle={report.vehicle_id}"
+            f" seq={report.seq} body={body}"
+        )
 
     def print_status(self) -> None:
         if not self.teams:

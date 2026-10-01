@@ -72,14 +72,6 @@ from sequence_manager import (
     next_report_sequence
 )
 
-from task_reports import (
-    publish_pipeline_survey,
-    publish_resource_delivery,
-    publish_docking_report,
-    publish_firefighting_report,
-    publish_incident_ack,
-    publish_readiness_report
-)
 
 
 import common_pb2
@@ -88,7 +80,6 @@ from robotx import rx_course_pb2
 from robotx import rx_requests_pb2
 from robotx import rx_reports_pb2
 from robotx import rx_commands_pb2
-from robotx import rx_common_pb2
 
 
 # ============================================================
@@ -135,8 +126,6 @@ run_id = None
 
 
 heartbeat_thread_started = False
-
-local_task_test_started = False
 
 
 processed_command_sequences = set()
@@ -389,176 +378,49 @@ def publish_heartbeat(
 
 
 # ============================================================
-# LOCAL HEARTBEAT LOOP
-#
-# SIMULATED TELEMETRY
+# HEARTBEAT LOOP
 # ============================================================
 
-def heartbeat_loop(
-    client
-):
+def heartbeat_loop(client):
+
+    if not config.LOCAL_TEST_MODE:
+        output("[VEHICLE] Waiting for real vehicle telemetry integration.")
+        return
+
+    from simulation.telemetry import get_telemetry
 
     first_cycle = True
-
 
     while not stop_event.is_set():
 
         if not client.is_connected():
-
-            time.sleep(
-                0.25
-            )
-
+            time.sleep(0.25)
             continue
 
-
-        # ====================================================
-        # IMPORTANT
-        #
-        # Real vehicle telemetry is NOT integrated yet.
-        #
-        # Prevent fake competition telemetry.
-        # ====================================================
-
-        if not config.LOCAL_TEST_MODE:
-
-            output(
-                "[VEHICLE] "
-                "Waiting for real vehicle telemetry integration."
+        results = []
+        for vid in config.VEHICLE_IDS:
+            telem = get_telemetry(vid)
+            if telem is None:
+                continue
+            ok, seq = publish_heartbeat(
+                client=client,
+                vehicle_id=vid,
+                vehicle_type=telem["vehicle_type"],
+                latitude=telem["latitude"],
+                longitude=telem["longitude"],
+                speed=telem["speed"],
+                heading=telem["heading"],
             )
-
-            return
-
-
-        # ====================================================
-        # USV1 - LOCAL SIMULATION
-        # ====================================================
-
-        usv_ok, usv_seq = (
-            publish_heartbeat(
-
-                client=
-                client,
-
-
-                vehicle_id=
-                config.USV_ID,
-
-
-                vehicle_type=
-                rx_common_pb2.TYPE_USV,
-
-
-                latitude=
-                1.28090,
-
-
-                longitude=
-                103.85548,
-
-
-                speed=
-                1.4,
-
-
-                heading=
-                123.0
-
-            )
-        )
-
-
-        # ====================================================
-        # UAV1 - LOCAL SIMULATION
-        # ====================================================
-
-        uav_ok, uav_seq = (
-            publish_heartbeat(
-
-                client=
-                client,
-
-
-                vehicle_id=
-                config.UAV_ID,
-
-
-                vehicle_type=
-                rx_common_pb2.TYPE_UAV,
-
-
-                latitude=
-                1.28070,
-
-
-                longitude=
-                103.85531,
-
-
-                speed=
-                6.5,
-
-
-                heading=
-                160.0
-
-            )
-        )
-
+            results.append((vid, ok, seq))
 
         if first_cycle:
-
             output()
-
-
-            if usv_ok:
-
-                output(
-                    "[09] "
-                    "USV1 heartbeat published"
-                )
-
-                output(
-                    f"     seq = "
-                    f"{usv_seq}"
-                )
-
-
-            if uav_ok:
-
-                output(
-                    "[10] "
-                    "UAV1 heartbeat published"
-                )
-
-                output(
-                    f"     seq = "
-                    f"{uav_seq}"
-                )
-
-
-            if usv_ok:
-
-                output(
-                    "[11] "
-                    "USV1 = STATE_AUTO"
-                )
-
-
-            if uav_ok:
-
-                output(
-                    "[12] "
-                    "UAV1 = STATE_AUTO"
-                )
-
-
+            for vid, ok, seq in results:
+                if ok:
+                    output(f"[HEARTBEAT] {vid} heartbeat published  seq={seq}  STATE_AUTO")
             first_cycle = False
 
-
-        stop_event.wait(
-            config.HEARTBEAT_PERIOD
-        )
+        stop_event.wait(config.HEARTBEAT_PERIOD)
 
 
 # ============================================================
@@ -787,481 +649,6 @@ def send_run_declaration(
     )
 
 
-# ============================================================
-# LOCAL AUTOMATIC TASK REPORT TEST
-#
-# LOCAL TEST ONLY.
-#
-# These values are intentionally simulated.
-# ============================================================
-
-def local_task_report_test(
-    client
-):
-
-    time.sleep(
-        1
-    )
-
-
-    output()
-
-    output(
-        "===================================================="
-    )
-
-    output(
-        "LOCAL TASK REPORT TEST"
-    )
-
-    output(
-        "===================================================="
-    )
-
-
-    # ========================================================
-    # [16] PIPELINE SURVEY
-    # ========================================================
-
-    success, sequence = (
-        publish_pipeline_survey(
-
-            client=
-            client,
-
-
-            vehicle_id=
-            config.USV_ID,
-
-
-            latitude=
-            1.28075,
-
-
-            longitude=
-            103.85560
-
-        )
-    )
-
-
-    if success:
-
-        output(
-            "[16] "
-            "PipelineSurveyReport publish queued"
-        )
-
-        output(
-            f"     vehicle_id = "
-            f"{config.USV_ID}"
-        )
-
-        output(
-            f"     report_seq = "
-            f"{sequence}"
-        )
-
-
-    time.sleep(
-        0.75
-    )
-
-
-    # ========================================================
-    # [17] RESOURCE DELIVERY
-    # ========================================================
-
-    success, sequence = (
-        publish_resource_delivery(
-
-            client=
-            client,
-
-
-            vehicle_id=
-            config.USV_ID,
-
-
-            task=
-            rx_common_pb2
-            .TASK_INFRA_SURVEY_REPAIR,
-
-
-            resource_color=
-            rx_common_pb2
-            .COLOR_RED,
-
-
-            delivery_circle_color=
-            rx_common_pb2
-            .COLOR_GREEN
-
-        )
-    )
-
-
-    if success:
-
-        output()
-
-        output(
-            "[17] "
-            "ResourceDeliveryRequest publish queued"
-        )
-
-        output(
-            f"     vehicle_id = "
-            f"{config.USV_ID}"
-        )
-
-        output(
-            f"     report_seq = "
-            f"{sequence}"
-        )
-
-
-    time.sleep(
-        0.75
-    )
-
-
-    # ========================================================
-    # [18] DOCKING
-    # ========================================================
-
-    success, sequence = (
-        publish_docking_report(
-
-            client=
-            client,
-
-
-            vehicle_id=
-            config.USV_ID,
-
-
-            bay_id=
-            1
-
-        )
-    )
-
-
-    if success:
-
-        output()
-
-        output(
-            "[18] "
-            "DockingReport publish queued"
-        )
-
-        output(
-            f"     vehicle_id = "
-            f"{config.USV_ID}"
-        )
-
-        output(
-            "     bay_id = 1"
-        )
-
-        output(
-            f"     report_seq = "
-            f"{sequence}"
-        )
-
-
-    time.sleep(
-        0.75
-    )
-
-
-    # ========================================================
-    # [19] FIREFIGHTING
-    # ========================================================
-
-    success, sequence = (
-        publish_firefighting_report(
-
-            client=
-            client,
-
-
-            vehicle_id=
-            config.UAV_ID,
-
-
-            window_id=
-            1
-
-        )
-    )
-
-
-    if success:
-
-        output()
-
-        output(
-            "[19] "
-            "FirefightingReport publish queued"
-        )
-
-        output(
-            f"     vehicle_id = "
-            f"{config.UAV_ID}"
-        )
-
-        output(
-            "     window_id = 1"
-        )
-
-        output(
-            f"     report_seq = "
-            f"{sequence}"
-        )
-
-
-    output()
-
-    output(
-        "DATA = LOCAL SIMULATION"
-    )
-
-    output(
-        "===================================================="
-    )
-
-    output(
-        "LOCAL TASK REPORT TEST COMPLETE"
-    )
-
-    output(
-        "===================================================="
-    )
-
-
-# ============================================================
-# START LOCAL TASK TEST
-# ============================================================
-
-def start_local_task_test(
-    client
-):
-
-    global local_task_test_started
-
-
-    if not (
-        config.AUTO_LOCAL_TASK_REPORT_TEST
-    ):
-
-        return
-
-
-    with state_lock:
-
-        if local_task_test_started:
-
-            return
-
-
-        local_task_test_started = True
-
-
-    thread = threading.Thread(
-
-        target=
-        local_task_report_test,
-
-
-        args=(
-            client,
-        ),
-
-
-        daemon=True,
-
-
-        name=
-        "robotx-local-task-test"
-
-    )
-
-
-    thread.start()
-
-
-# ============================================================
-# DETERMINE COMMAND TARGET VEHICLE
-#
-# Used only for local Task 4 response testing.
-# ============================================================
-
-def command_target_vehicle(
-    command,
-    command_type
-):
-
-    try:
-
-        body = getattr(
-            command,
-            command_type
-        )
-
-        explicit_vehicle_id = getattr(body, "vehicle_id", "")
-        if explicit_vehicle_id in config.VEHICLE_IDS:
-            return explicit_vehicle_id
-
-        if command.vehicle_id in config.VEHICLE_IDS:
-            return command.vehicle_id
-
-
-        if hasattr(
-            body,
-            "vehicle_type"
-        ):
-
-            vehicle_type = (
-                body.vehicle_type
-            )
-
-
-            if (
-                vehicle_type
-                ==
-                rx_common_pb2.TYPE_UAV
-            ):
-
-                return config.UAV_ID
-
-
-    except Exception:
-
-        pass
-
-
-    return config.USV_ID
-
-
-# ============================================================
-# LOCAL TASK 4 RESPONSE
-#
-# This proves the protobuf response path locally.
-#
-# Real mission logic / vehicle routing is still pending.
-# ============================================================
-
-def local_task4_response(
-    client,
-    command,
-    command_type
-):
-
-    if not config.AUTO_TASK4_RESPONSES:
-        output(f"[COMMAND] response not sent; simulated auto-response is disabled | command_seq={command.seq} run={run_id}", "warning")
-        return
-
-
-    vehicle_id = (
-        command_target_vehicle(
-            command,
-            command_type
-        )
-    )
-
-
-    # ReadinessConfirm has its matching readiness report.
-
-    if (
-        command_type
-        == "readiness_confirm"
-    ):
-
-        success, sequence = (
-            publish_readiness_report(
-
-                client=
-                client,
-
-
-                vehicle_id=
-                vehicle_id,
-
-
-                command_seq=
-                command.seq
-
-            )
-        )
-
-
-        if success:
-
-            output(
-                f"[COMMAND] response publish queued | type=ReadinessReport | command_seq={command.seq} | report_seq={sequence} | vehicle={vehicle_id} | run={run_id}"
-            )
-
-            output(
-                f"        command_seq = "
-                f"{command.seq}"
-            )
-
-            output(
-                f"        report_seq = "
-                f"{sequence}"
-            )
-
-
-        else:
-            output(f"[COMMAND] response failed | type=ReadinessReport | command_seq={command.seq} | vehicle={vehicle_id} | run={run_id}", "error")
-        return
-
-
-    # Other local Task 4 command tests use IncidentAck.
-
-    success, sequence = (
-        publish_incident_ack(
-
-            client=
-            client,
-
-
-            vehicle_id=
-            vehicle_id,
-
-
-            command_seq=
-            command.seq
-
-        )
-    )
-
-
-    if success:
-
-        output(
-            f"[COMMAND] response publish queued | type=IncidentAck | command_seq={command.seq} | report_seq={sequence} | vehicle={vehicle_id} | run={run_id}"
-        )
-
-        output(
-            f"        vehicle_id = "
-            f"{vehicle_id}"
-        )
-
-        output(
-            f"        command_seq = "
-            f"{command.seq}"
-        )
-
-        output(
-            f"        report_seq = "
-            f"{sequence}"
-        )
-    else:
-        output(f"[COMMAND] response failed | type=IncidentAck | command_seq={command.seq} | vehicle={vehicle_id} | run={run_id}", "error")
 
 
 # ============================================================
@@ -1492,9 +879,9 @@ def process_command(
         )
 
 
-        start_local_task_test(
-            client
-        )
+        if config.LOCAL_TEST_MODE:
+            from simulation.task_reports import start as start_sim_task_test
+            start_sim_task_test(client, output)
 
 
         return
@@ -1574,13 +961,9 @@ def process_command(
             )
 
 
-        local_task4_response(
-
-            client,
-            command,
-            command_type
-
-        )
+        if config.LOCAL_TEST_MODE:
+            from simulation.task4_responses import respond as sim_task4_respond
+            sim_task4_respond(client, command, command_type, run_id, output)
 
 
         return

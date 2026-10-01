@@ -23,6 +23,7 @@ Interactive commands:
     assistance TEAM_ID usv|uuv|uav     send a Task 4 AssistanceRequest
     malformed-course                   publish invalid bytes (OCS error test)
     status                             show declarations, runs, and reports
+    log                                show buffered RxReport heartbeat log (last 500)
     help                               show commands
     quit                               stop
 
@@ -33,6 +34,7 @@ pinger frequency. They are not real competition-course geometry.
 from __future__ import annotations
 
 import argparse
+import collections
 import logging
 import queue
 import sys
@@ -104,6 +106,7 @@ class RoboCommandSimulator:
         self.next_run_id = 1
         self.stop_event = threading.Event()
         self.command_input: queue.Queue[str] = queue.Queue()
+        self._report_log: collections.deque[str] = collections.deque(maxlen=500)
         self.client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                                   client_id="robocommand_simulator", reconnect_on_failure=True)
         self.client.reconnect_delay_set(min_delay=1, max_delay=10)
@@ -231,8 +234,9 @@ class RoboCommandSimulator:
             raise ValueError(f"stale report seq={report.seq} for {report.vehicle_id}; last={previous}")
         team.report_sequences[report.vehicle_id] = report.seq
         body = report.WhichOneof("body")
-        self.log(logging.INFO, "RECEIVED RxReport: team=%s vehicle=%s seq=%s body=%s",
-                 report.team_id, report.vehicle_id, report.seq, body)
+        entry = (f"{time.strftime('%H:%M:%S')} RxReport: team={report.team_id}"
+                 f" vehicle={report.vehicle_id} seq={report.seq} body={body}")
+        self._report_log.append(entry)
 
     def print_status(self) -> None:
         if not self.teams:
@@ -266,6 +270,13 @@ class RoboCommandSimulator:
             self.log(logging.INFO, "PUBLISHED intentionally malformed course payload")
         elif action == "status" and len(words) == 1:
             self.print_status()
+        elif action == "log" and len(words) == 1:
+            if not self._report_log:
+                print("No report log entries yet.")
+            else:
+                for entry in self._report_log:
+                    print(entry)
+                print(f"-- {len(self._report_log)} entries (last {self._report_log.maxlen} kept) --")
         elif action in {"quit", "exit"} and len(words) == 1:
             self.stop_event.set()
         else:

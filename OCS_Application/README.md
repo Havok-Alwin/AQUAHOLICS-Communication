@@ -6,8 +6,9 @@ separately (for example, on another laptop).
 
 ## Implemented workflow
 
-- Waits for DHCP-provided network connectivity to the configured broker, then
-  connects to MQTT. It retries while the broker or network is unavailable.
+- Finds the DHCP-provided IPv4 default gateway when `ROBOTX_BROKER` is unset,
+  checks the route, then connects to MQTT. It retries while network or broker
+  connectivity is unavailable.
 - Restores the course and team command subscriptions after reconnecting.
 - Receives and validates `RxCourse` messages, then sends a `RunDeclaration`.
 - Publishes USV1 and UAV1 heartbeat reports with independent per-vehicle
@@ -33,11 +34,13 @@ separately (for example, on another laptop).
 
 ## Network setup
 
-Set `ROBOTX_BROKER` on the OCS laptop to the RoboCommand laptop's reachable
-hostname or DHCP-assigned IP address. Set `ROBOTX_PORT` if the broker uses a
-port other than `1883`. DHCP must provide the OCS laptop with an address and a
-route to the broker; the OCS checks network readiness but does not configure
-DHCP. `localhost` is the default broker address for local testing.
+By default, the OCS discovers the DHCP-provided IPv4 default gateway and uses
+it as the RoboCommand broker address. In the two-laptop setup, configure DHCP
+so the RoboCommand laptop is the OCS laptop's default gateway. To use a
+different address, set `ROBOTX_BROKER` to the broker's reachable hostname or
+IP address. Set `ROBOTX_PORT` if the broker uses a port other than `1883`.
+DHCP must provide the OCS laptop with an address and route; the OCS does not
+configure DHCP. With no gateway, local test mode falls back to `localhost`.
 
 For a real network run, disable local simulation with
 `ROBOTX_LOCAL_TEST=0`. The default is local test mode, which can publish
@@ -54,4 +57,4 @@ competition vehicles.
 - `task_reports.py` — task report message builders and MQTT publishing.
 - `logger.py` — best-effort session logging.
 - `../Robocmd_Application/gen/python/` — generated protobuf classes used by the
-  OCS.
+  OCS; the application adds this directory to its Python import path.

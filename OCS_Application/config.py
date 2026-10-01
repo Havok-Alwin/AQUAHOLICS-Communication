@@ -24,17 +24,12 @@ VEHICLE_IDS = [
 # ============================================================
 # MQTT
 #
-# LOCAL TEST:
-# localhost
-#
-# Team Village / Competition:
-# Set ROBOTX_BROKER before launching the OCS.
+# Set ROBOTX_BROKER to override automatic discovery. When unset, the OCS uses
+# the DHCP-provided default gateway (RoboCommand laptop in the two-laptop setup).
 # ============================================================
 
-MQTT_BROKER = os.getenv(
-    "ROBOTX_BROKER",
-    "localhost"
-)
+MQTT_BROKER = os.getenv("ROBOTX_BROKER")
+MQTT_BROKER_EXPLICIT = bool(MQTT_BROKER)
 
 MQTT_PORT = int(
     os.getenv(

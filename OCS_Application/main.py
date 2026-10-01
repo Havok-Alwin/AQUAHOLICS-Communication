@@ -17,6 +17,8 @@ import threading
 import queue
 import logging
 import socket
+import platform
+import subprocess
 
 
 # ============================================================
@@ -29,30 +31,21 @@ PROJECT_ROOT = os.path.dirname(
     )
 )
 
-
-LOCAL_PACKAGES_PATH = os.path.join(
+ROBOCMD_ROOT = os.path.join(
     PROJECT_ROOT,
-    "rc_test",
-    "local_packages"
+    "Robocmd_Application"
 )
 
 
 GEN_PYTHON_PATH = os.path.join(
-    PROJECT_ROOT,
+    ROBOCMD_ROOT,
     "gen",
     "python"
 )
 
 
-sys.path.insert(
-    0,
-    LOCAL_PACKAGES_PATH
-)
-
-sys.path.insert(
-    1,
-    GEN_PYTHON_PATH
-)
+if os.path.isdir(GEN_PYTHON_PATH) and GEN_PYTHON_PATH not in sys.path:
+    sys.path.insert(0, GEN_PYTHON_PATH)
 
 
 # ============================================================
@@ -1987,9 +1980,26 @@ def connect_with_retry(
 
         try:
 
-            set_connection_state("Waiting for network", "checking DHCP-assigned route")
+            if not config.MQTT_BROKER_EXPLICIT:
+                discovered_broker = discover_default_gateway()
+                if discovered_broker:
+                    config.MQTT_BROKER = discovered_broker
+                elif config.LOCAL_TEST_MODE:
+                    # Preserve out-of-the-box local broker testing when no
+                    # DHCP gateway is present; a later retry can discover one.
+                    config.MQTT_BROKER = "localhost"
+                else:
+                    config.MQTT_BROKER = None
+
+            if not config.MQTT_BROKER:
+                set_connection_state("Waiting for network", "waiting for DHCP default gateway")
+                output("[NETWORK] No default gateway discovered yet; waiting for DHCP and retrying in 2 seconds.", "warning")
+                stop_event.wait(2)
+                continue
+
+            set_connection_state("Waiting for network", f"checking route to broker={config.MQTT_BROKER}")
             if not network_ready():
-                output("[NETWORK] No DHCP-backed route to the configured broker yet; retrying in 2 seconds.", "warning")
+                output(f"[NETWORK] No usable route to broker {config.MQTT_BROKER} yet; retrying in 2 seconds.", "warning")
                 stop_event.wait(2)
                 continue
 
@@ -2051,6 +2061,60 @@ def connect_with_retry(
     return False
 
 
+def discover_default_gateway():
+    """Return the system's IPv4 default gateway, if one is configured by DHCP."""
+    # Linux exposes the IPv4 route table without requiring an external command.
+    try:
+        with open("/proc/net/route", encoding="ascii") as routes:
+            next(routes, None)
+            for row in routes:
+                fields = row.split()
+                if len(fields) < 4 or fields[1] != "00000000":
+                    continue
+                flags = int(fields[3], 16)
+                if flags & 0x1:
+                    gateway_bytes = bytes.fromhex(fields[2])
+                    gateway = socket.inet_ntoa(gateway_bytes[::-1])
+                    if gateway != "0.0.0.0":
+                        return gateway
+    except (OSError, ValueError):
+        pass
+
+    # Support macOS and Windows hosts as well as Linux.
+    system = platform.system()
+    commands = {
+        "Darwin": ["route", "-n", "get", "default"],
+        "Windows": ["route", "print", "-4"],
+    }
+    command = commands.get(system)
+    if command:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=3, check=False)
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if system == "Darwin" and len(parts) == 2 and parts[0] == "gateway:":
+                    return parts[1]
+                if system == "Windows" and len(parts) >= 4 and parts[0:2] == ["0.0.0.0", "0.0.0.0"]:
+                    return parts[2]
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    # The `ip` utility is available on most Linux distributions even when
+    # /proc route data is restricted by the runtime environment.
+    if system == "Linux":
+        try:
+            result = subprocess.run(["ip", "-4", "route", "show", "default"],
+                                    capture_output=True, text=True,
+                                    timeout=3, check=False)
+            fields = result.stdout.split()
+            if len(fields) >= 3 and fields[0] == "default" and fields[1] == "via":
+                return fields[2]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
 def network_ready():
     """Return true once the broker resolves and the OS has a usable route.
 
@@ -2058,6 +2122,8 @@ def network_ready():
     does not send application data. Local development on localhost is allowed.
     """
     try:
+        if not config.MQTT_BROKER:
+            return False
         addresses = socket.getaddrinfo(config.MQTT_BROKER, config.MQTT_PORT, type=socket.SOCK_DGRAM)
         if config.MQTT_BROKER in {"localhost", "127.0.0.1", "::1"}:
             return True
@@ -2101,8 +2167,8 @@ def main():
     if config.LOCAL_TEST_MODE:
 
         output(
-            "[01] Network ready "
-            "(LOCAL TEST - DHCP not verified)"
+            "[01] Local test mode enabled "
+            "(broker auto-discovery active unless ROBOTX_BROKER is set)"
         )
 
 

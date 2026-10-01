@@ -16,6 +16,7 @@ import time
 import threading
 import queue
 import logging
+import socket
 
 
 # ============================================================
@@ -152,6 +153,7 @@ connection_count = 0
 connection_state = "Disconnected"
 message_queue = queue.Queue(maxsize=256)
 message_queue_dropped = 0
+message_queue_stale = 0
 
 
 # ============================================================
@@ -1116,6 +1118,13 @@ def command_target_vehicle(
             command_type
         )
 
+        explicit_vehicle_id = getattr(body, "vehicle_id", "")
+        if explicit_vehicle_id in config.VEHICLE_IDS:
+            return explicit_vehicle_id
+
+        if command.vehicle_id in config.VEHICLE_IDS:
+            return command.vehicle_id
+
 
         if hasattr(
             body,
@@ -1323,6 +1332,13 @@ def process_command(
 
         return
 
+    # The MQTT command topic is team scoped. When RoboCommand supplies a
+    # vehicle_id in the protobuf envelope (or command body), verify it before
+    # dispatch so a misrouted command cannot reach the wrong vehicle path.
+    if command.vehicle_id and command.vehicle_id not in config.VEHICLE_IDS:
+        output(f"[COMMAND] rejected unknown vehicle_id={command.vehicle_id!r} topic={message.topic}", "error")
+        return
+
 
     # ========================================================
     # DUPLICATE COMMAND
@@ -1354,6 +1370,15 @@ def process_command(
     if command_type not in allowed_commands:
         output(f"[COMMAND] rejected unexpected body type={command_type!r} seq={command.seq}", "error")
         return
+    command_body = getattr(command, command_type)
+    body_vehicle_id = getattr(command_body, "vehicle_id", "")
+    if body_vehicle_id:
+        if body_vehicle_id not in config.VEHICLE_IDS:
+            output(f"[COMMAND] rejected unknown body vehicle_id={body_vehicle_id!r} seq={command.seq}", "error")
+            return
+        if command.vehicle_id and body_vehicle_id != command.vehicle_id:
+            output(f"[COMMAND] rejected envelope/body vehicle mismatch envelope={command.vehicle_id!r} body={body_vehicle_id!r} seq={command.seq}", "error")
+            return
     if not command.team_id or command.seq <= 0:
         output(f"[COMMAND] rejected missing team_id or invalid seq={command.seq}", "error")
         return
@@ -1849,13 +1874,16 @@ def on_message(client, userdata, message):
     """Only enqueue in Paho's network thread; parsing, logging, and display happen elsewhere."""
     global message_queue_dropped
     try:
-        message_queue.put_nowait((client, message))
+        with state_lock:
+            epoch = connection_count
+        message_queue.put_nowait((epoch, client, message))
     except Exception:
         # Avoid disk/console I/O in Paho's callback if the bounded queue is overloaded.
         message_queue_dropped += 1
 
 
 def message_worker():
+    global message_queue_stale
     while not stop_event.is_set():
         try:
             item = message_queue.get(timeout=0.25)
@@ -1864,8 +1892,17 @@ def message_worker():
         if item is None:
             message_queue.task_done()
             break
-        client, message = item
+        epoch, client, message = item
         try:
+            with state_lock:
+                active_epoch = connection_count
+                active_state = connection_state
+            if epoch != active_epoch or active_state != "Connected":
+                message_queue_stale += 1
+                safe_log(logger, logging.WARNING,
+                         "MQTT RX discarded message outside active connection | queued_connection=%s active_connection=%s state=%s topic=%s",
+                         epoch, active_epoch, active_state, message.topic)
+                continue
             topic = message.topic
             safe_log(logger, logging.INFO, "MQTT RX | topic=%s | bytes=%s | retained=%s",
                      topic, len(message.payload), bool(getattr(message, "retain", False)))
@@ -1950,6 +1987,12 @@ def connect_with_retry(
 
         try:
 
+            set_connection_state("Waiting for network", "checking DHCP-assigned route")
+            if not network_ready():
+                output("[NETWORK] No DHCP-backed route to the configured broker yet; retrying in 2 seconds.", "warning")
+                stop_event.wait(2)
+                continue
+
             set_connection_state("Connecting", f"broker={config.MQTT_BROKER}:{config.MQTT_PORT}")
             output(f"Connecting to MQTT broker {config.MQTT_BROKER}:{config.MQTT_PORT}...")
 
@@ -2005,6 +2048,30 @@ def connect_with_retry(
             )
 
 
+    return False
+
+
+def network_ready():
+    """Return true once the broker resolves and the OS has a usable route.
+
+    A UDP route probe asks the kernel which local interface it would use; it
+    does not send application data. Local development on localhost is allowed.
+    """
+    try:
+        addresses = socket.getaddrinfo(config.MQTT_BROKER, config.MQTT_PORT, type=socket.SOCK_DGRAM)
+        if config.MQTT_BROKER in {"localhost", "127.0.0.1", "::1"}:
+            return True
+        for family, socktype, proto, _, address in addresses:
+            probe = socket.socket(family, socktype, proto)
+            try:
+                probe.connect(address)
+                local_ip = probe.getsockname()[0]
+                if local_ip and not local_ip.startswith("127.") and local_ip != "::1":
+                    return True
+            finally:
+                probe.close()
+    except OSError as error:
+        safe_log(logger, logging.INFO, "Network readiness probe pending | broker=%s | error=%s", config.MQTT_BROKER, error)
     return False
 
 
@@ -2079,7 +2146,7 @@ def main():
             if now - last_status_report >= 5:
                 with state_lock:
                     current_state = connection_state
-                output(f"[MQTT CURRENT STATE] {current_state} | run={run_id or 'not-started'} | dropped_messages={message_queue_dropped}")
+                output(f"[MQTT CURRENT STATE] {current_state} | run={run_id or 'not-started'} | dropped_messages={message_queue_dropped} | stale_messages={message_queue_stale}")
                 last_status_report = now
 
 

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Vehicle backend: hosts the Mission Planner DLLs (netstandard2.0) on .NET 10. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Ocs.Backend</RootNamespace>
+    <!-- The MP DLLs live one folder up, next to this project. -->
+    <MpDir>$(MSBuildProjectDirectory)/..</MpDir>
+  </PropertyGroup>
+
+  <!-- Compile-time references: only the assemblies our code calls directly. -->
+  <ItemGroup>
+    <Reference Include="MissionPlanner.ArduPilot" HintPath="$(MpDir)/MissionPlanner.ArduPilot.dll" />
+    <Reference Include="MissionPlanner.Comms" HintPath="$(MpDir)/MissionPlanner.Comms.dll" />
+    <Reference Include="MissionPlanner.Utilities" HintPath="$(MpDir)/MissionPlanner.Utilities.dll" />
+    <Reference Include="MAVLink" HintPath="$(MpDir)/MAVLink.dll" />
+    <Reference Include="Interfaces" HintPath="$(MpDir)/Interfaces.dll" />
+  </ItemGroup>
+
+  <!-- Runtime: every MP dependency next to the executable, so transitive loads resolve. -->
+  <ItemGroup>
+    <!-- Excluded from MP's folder: its log4net.dll and System.*/Microsoft.* package DLLs are
+         .NET Framework builds. On .NET 10 they shadow the right assemblies (e.g. a
+         System.Configuration.ConfigurationManager without the type). .NET 10 builds come from
+         the shared framework or the packages below. -->
+    <None Include="$(MpDir)/*.dll" Exclude="$(MpDir)/log4net.dll;$(MpDir)/System.*.dll;$(MpDir)/Microsoft.*.dll" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" Visible="false" />
+    <None Include="$(MpDir)/*.xml;$(MpDir)/*.json" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" Visible="false" />
+    <None Include="$(MpDir)/x64/*" CopyToOutputDirectory="PreserveNewest" Link="x64/%(Filename)%(Extension)" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="log4net" Version="3.5.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.12" />
+  </ItemGroup>
+  <!-- .NET 10 replacements for MP dependencies that only exist on .NET Framework / Mono. -->
+
+</Project>

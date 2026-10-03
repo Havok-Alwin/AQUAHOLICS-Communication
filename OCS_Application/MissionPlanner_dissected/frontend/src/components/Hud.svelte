@@ -1,24 +1,42 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { VehicleId } from '../lib/config';
+  import { VEHICLE_TYPE, type VehicleId } from '../lib/config';
+  import type { CurrentStateFields } from '../lib/currentState';
   import { onFrame } from '../lib/frameClock';
+  import { drawHud, type HudInput } from '../lib/hudDraw';
   import { formatAge, type SourceStatus } from '../lib/source';
   import { vehicles } from '../lib/sources';
-  import { attitude } from '../lib/telemetry';
+  import { attitude, vehicleState } from '../lib/telemetry';
 
   let { vehicle }: { vehicle: VehicleId } = $props();
 
   let canvas: HTMLCanvasElement;
   let wrapEl: HTMLDivElement;
-  let status: SourceStatus = { state: 'offline', ageMs: null };
-  let readout = $state({ roll: '—', pitch: '—', yaw: '—' });
   let stats = $state('');
 
-  // Plain (non-reactive) copy for the draw loop.
-  $effect(() => vehicles[vehicle].status.subscribe((s) => (status = s)));
+  // Plain (non-reactive) copies for the draw loop.
+  let status: SourceStatus = { state: 'offline', ageMs: null };
+  let cs: Partial<CurrentStateFields> = {};
+  // MP HUD timers: ARMED shown 8 s after arming; mode red 2 s after a change.
+  let armedAt = -Infinity;
+  let modeChangedAt = -Infinity;
+  let lastArmed: boolean | undefined;
+  let lastMode: string | undefined;
 
-  const fmt = (v: number, d = 1) => v.toFixed(d);
-  const heading = (y: number) => ((y % 360) + 360) % 360;
+  $effect(() => vehicles[vehicle].status.subscribe((s) => (status = s)));
+  $effect(() => {
+    // New vehicle selected: forget the previous vehicle's timers.
+    lastArmed = lastMode = undefined;
+    armedAt = modeChangedAt = -Infinity;
+    return vehicleState[vehicle].subscribe((s) => {
+      const t = performance.now();
+      if (s.armed !== undefined && lastArmed !== undefined && s.armed && !lastArmed) armedAt = t;
+      if (s.mode !== undefined && lastMode !== undefined && s.mode !== lastMode) modeChangedAt = t;
+      lastArmed = s.armed ?? lastArmed;
+      lastMode = s.mode ?? lastMode;
+      cs = s;
+    });
+  });
 
   onMount(() => {
     const ctx = canvas.getContext('2d')!;
@@ -36,19 +54,9 @@
 
     const stopFrames = onFrame((nowMs, dtS) => {
       attitude[vehicle].step(nowMs, dtS);
-      draw(ctx, wrapEl.clientWidth, wrapEl.clientHeight);
+      draw(ctx, wrapEl.clientWidth, wrapEl.clientHeight, nowMs);
       frames++;
     });
-
-    // Numeric readouts at 5 Hz: text that changes every frame is unreadable.
-    const readoutTimer = setInterval(() => {
-      const track = attitude[vehicle];
-      const a = track.shown;
-      readout =
-        status.state === 'live' && track.received
-          ? { roll: fmt(a.roll) + '°', pitch: fmt(a.pitch) + '°', yaw: fmt(heading(a.yaw), 0) + '°' }
-          : { roll: '—', pitch: '—', yaw: '—' };
-    }, 200);
 
     const statsTimer = setInterval(() => {
       const pkts = attitude[vehicle].takePacketCount();
@@ -59,57 +67,67 @@
     return () => {
       stopFrames();
       ro.disconnect();
-      clearInterval(readoutTimer);
       clearInterval(statsTimer);
     };
   });
 
-  // Temporary drawing: horizon + aircraft symbol only. Real HUD geometry is logic 5.
-  function draw(g: CanvasRenderingContext2D, W: number, H: number) {
+  const num = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? 0 : v);
+
+  function draw(g: CanvasRenderingContext2D, W: number, H: number, nowMs: number) {
     const a = attitude[vehicle].shown;
-    const cx = W / 2;
-    const cy = H / 2;
-    const pxPerDeg = 4;
+    const type = VEHICLE_TYPE[vehicle];
+    const input: HudInput = {
+      roll: a.roll,
+      pitch: a.pitch,
+      heading: a.yaw, // MP binds heading <- yaw
+      targetheading: num(cs.nav_bearing),
+      groundcourse: num(cs.groundcourse),
+      xtrack_error: num(cs.xtrack_error),
+      turnrate: num(cs.turnrate),
+      airspeed: num(cs.airspeed),
+      groundspeed: num(cs.groundspeed),
+      targetspeed: num(cs.targetairspeed),
+      alt: num(cs.alt),
+      targetalt: num(cs.targetalt),
+      groundalt: num(cs.HomeAlt),
+      verticalspeed: num(cs.verticalspeed),
+      mode: cs.mode ?? '',
+      disttowp: num(cs.wp_dist),
+      wpno: num(cs.wpno),
+      armed: cs.armed ?? false,
+      safetyactive: cs.safetyactive ?? false,
+      failsafe: cs.failsafe ?? false,
+      message: cs.messageHigh ?? '',
+      messageSeverity: num(cs.messageHighSeverity),
+      lowairspeed: false, // logic 6
+      lowgroundspeed: false, // logic 6
+    };
+    drawHud(g, W, H, input, {
+      showAlt: type === 'UAV',
+      showAirspeed: type === 'UAV',
+      armedRecently: nowMs - armedAt < 8000,
+      modeRecentlyChanged: nowMs - modeChangedAt < 2000,
+      speedunit: 'm/s', // logic 10
+      altunit: 'm',
+      distunit: 'm',
+    });
 
-    g.save();
-    g.clearRect(0, 0, W, H);
-    g.translate(cx, cy);
-    g.rotate((-a.roll * Math.PI) / 180);
-    g.translate(0, a.pitch * pxPerDeg);
-    g.fillStyle = '#3d86c6';
-    g.fillRect(-W * 2, -H * 3, W * 4, H * 3);
-    g.fillStyle = '#7a5a3a';
-    g.fillRect(-W * 2, 0, W * 4, H * 3);
-    g.strokeStyle = '#fff';
-    g.lineWidth = 2;
-    g.beginPath();
-    g.moveTo(-W * 2, 0);
-    g.lineTo(W * 2, 0);
-    g.stroke();
-    g.restore();
-
-    g.strokeStyle = '#ffd400';
-    g.lineWidth = 3;
-    g.beginPath();
-    g.moveTo(cx - 70, cy);
-    g.lineTo(cx - 20, cy);
-    g.lineTo(cx, cy + 14);
-    g.lineTo(cx + 20, cy);
-    g.lineTo(cx + 70, cy);
-    g.stroke();
-
-    // A frozen horizon must never be read as a still vehicle.
+    // A frozen HUD must never be read as a still vehicle.
     if (status.state !== 'live' || !attitude[vehicle].received) {
+      const cx = W / 2;
+      const cy = H / 2;
       g.fillStyle = 'rgba(0,0,0,0.65)';
       g.fillRect(0, 0, W, H);
       g.fillStyle = status.state === 'stale' ? '#d29922' : '#f85149';
       g.font = 'bold 22px system-ui, sans-serif';
       g.textAlign = 'center';
+      g.textBaseline = 'alphabetic';
       const label = status.state === 'live' ? 'NO ATTITUDE YET' : status.state.toUpperCase();
       g.fillText(label, cx, cy - 6);
       g.font = '14px system-ui, sans-serif';
       g.fillStyle = '#e6edf3';
       g.fillText(`last update ${formatAge(status.ageMs)}`, cx, cy + 18);
+      g.textAlign = 'left';
     }
   }
 </script>
@@ -118,12 +136,7 @@
   <div class="canvas-wrap" bind:this={wrapEl}>
     <canvas bind:this={canvas}></canvas>
   </div>
-  <div class="readouts mono">
-    <span>Roll <b>{readout.roll}</b></span>
-    <span>Pitch <b>{readout.pitch}</b></span>
-    <span>Yaw <b>{readout.yaw}</b></span>
-    <span class="stats">{stats}</span>
-  </div>
+  <div class="stats mono">{stats}</div>
 </div>
 
 <style>
@@ -131,7 +144,7 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.3rem;
   }
   .canvas-wrap {
     flex: 1;
@@ -146,14 +159,9 @@
     width: 100%;
     height: 100%;
   }
-  .readouts {
-    display: flex;
-    gap: 1.2rem;
-    font-size: 0.9rem;
-  }
   .stats {
-    margin-left: auto;
+    text-align: right;
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 0.75rem;
   }
 </style>

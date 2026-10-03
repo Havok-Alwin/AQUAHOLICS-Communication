@@ -19,13 +19,15 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  logic 0, 1 and 2 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
+  logic 0, 1, 2 and 5 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
   messages, and that file is excluded from production builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review logic 2. Then the remaining logic items one at a time, starting with 3 (stream-rate setup). The .NET 10 check (a small console app
+Review logic 5. Order agreed 2026-10-04: frontend items first (6 thresholds, 7 severity, 10 units,
+11 loop pacing), then the backend items (3 stream rates, 8 connect/link-lost, 9 commands) together
+with the backend. The .NET 10 check (a small console app
 that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
 roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
 
@@ -34,7 +36,9 @@ roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it 
 - `~/MissionPlanner-latest/`: the full Mission Planner build (binaries only, no C# source). Read its
   logic from the IL: `ikdasm ~/MissionPlanner-latest/MissionPlanner.exe > mp.il` (FlightData,
   MainV2), `MissionPlanner.Controls.dll` (HUD), `MissionPlanner.ArduPilot.dll` (CurrentState,
-  MAVLinkInterface). Upstream source: github.com/ArduPilot/MissionPlanner.
+  MAVLinkInterface). Upstream source: github.com/ArduPilot/MissionPlanner. For long methods,
+  decompile instead: `dotnet tool install ilspycmd --tool-path <dir>`, then
+  `ilspycmd -t MissionPlanner.Controls.HUD MissionPlanner.Controls.dll` (gives readable C#).
 - `~/Test_frontend/`: prototype of logic 0 (per-stream rates, fast/slow channel, rAF frame clock,
   extrapolation) in `backend/Bridge.cs` and `frontend/app.js`. Reference only; not the base.
 - `../RobotX Resources.pdf`: OCS <-> RoboCommand protocol (topics, envelopes, heartbeat, checklist).
@@ -76,7 +80,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 | 2 | Update gate | `CurrentState.UpdateCurrentSettings`, `FlightData.updateBindingSource` | **Corrected from the IL:** the 50 ms gate in `UpdateCurrentSettings` covers only housekeeping; the UI-push callback runs every call. The real UI gate is `FlightData.updateBindingSource`: at most every 100 ms, it skips while a previous UI update is still pending (5 s watchdog), and it only pushes bindings for the visible tab. Frontend: `gate.ts` (100 ms, keeps the latest value, `cancel()`) applied to SLOW snapshots in `telemetry.ts`. Freshness (`markUpdate`) is not gated. Backend requirements: see "Backend requirements found in the IL" | done |
 | 3 | Stream-rate setup | `MAVLinkInterface.requestDatastream`; `cs.rateattitude/rateposition/ratestatus/ratesensors/raterc` (defaults 4/2/2/2) | Requests each MAVLink message group at its own rate | todo |
 | 4 | Invalidate on change | `HUD.set_roll` -> `Invalidate()` | MP's HUD is event-driven, not timer-driven (item 0 improves on this) | todo |
-| 5 | HUD geometry | `HUD.doPaint` | Pitch-ladder px/deg, ticks, heading tape, aircraft symbol, colours | todo |
+| 5 | HUD geometry | `HUD.doPaint` | Pitch-ladder px/deg, ticks, heading tape, aircraft symbol, colours. Ported from the decompiled source (`ilspycmd`, see Reference material) in `hudDraw.ts`. It is a pure draw function and every size scales with the canvas as in MP. The status-line items (battery, GPS, link bars, clock, vibe, EKF, pre-arm, CPU) are not drawn on the HUD because the vehicle card shows them. For the USV, the altitude tape and AS line are off. Deviations, each with its reason in the file header: heading-tape target off the right edge (fixes an MP bug), wrap-aware off-tape check, dark heading readout, and the stacked ARMED/DISARMED/SAFE/FAILSAFE texts (MP's overlap). Low-speed flags await logic 6 and units await logic 10 | done |
 | 6 | Warning thresholds | `HUD.lowgroundspeed/lowairspeed/lowvoltagealert/criticalvoltagealert/failsafe/safetyactive` | When to alert the operator. Safety-relevant: port exactly | todo |
 | 7 | Status text severity | `cs.messageHigh`, `cs.messageHighSeverity` (`MAV_SEVERITY`) | Colour/priority of vehicle messages | todo |
 | 8 | Connect / link-lost | `MainV2` connect flow | Open link, request streams, detect lost heartbeat so a frozen display is not read as a still vehicle | todo |
@@ -181,3 +185,39 @@ Backend requirements found in the IL (for when the vehicle backend is designed):
 - Who sets `current_task` and task reports for the USV (no companion computer): OCS operator input?
 - How UAV OpenCV results reach the OCS: over the same telemetry radio as MAVLink, or a separate link.
 - Telemetry radio air data rate (sets the stream-rate budget).
+
+## Future: a different HUD per vehicle (planned, not now)
+
+The user has a plan for a different HUD, probably a USV-specific one that replaces the aircraft-style
+MP HUD. **Do not build it until the user asks.** Today both vehicles use the MP port (`hudDraw.ts`).
+For the USV it only switches off the altitude tape and the airspeed line.
+
+The HUD is designed to be unplugged and replaced. A new renderer is a pure function with the same
+signature, so nothing upstream of it changes.
+
+```
+attitude.ts (FAST, per frame) ─┐
+telemetry.ts (SLOW, gated)  ───┼─> Hud.svelte builds HudInput ─> drawHud(g, W, H, input, options)
+frameClock.ts (rAF)         ───┘        └─ then draws the NOT LIVE / STALE overlay on top
+```
+
+Files, all under `frontend/src/`:
+
+| File | Role | Change for a new HUD? |
+|---|---|---|
+| `lib/hudDraw.ts` | MP HUD renderer: `drawHud()`, `HudInput`, `HudOptions` | Keep it as the UAV renderer. Add a new file (e.g. `lib/hudDrawUsv.ts`) with the same signature |
+| `components/Hud.svelte` | Builds `HudInput` from the attitude track + SLOW snapshot, calls the renderer (`draw()`, the `drawHud(...)` call and the `showAlt`/`showAirspeed` options), and draws the NOT LIVE overlay | **Swap point:** choose the renderer by `VEHICLE_TYPE[vehicle]`. Extend `HudInput` here if the new HUD needs more fields |
+| `lib/config.ts` | `VEHICLE_TYPE` (USV1 → USV, UAV1 → UAV) | Only if vehicles or types change |
+| `lib/currentState.ts`, `lib/bindings.ts` | SLOW fields from `CurrentState` | Only if the new HUD needs a field not sent yet. Add it to both, and to the backend serializer |
+| `components/VehicleStatus.svelte` | Vehicle card. Per-type tiles at the `{#if type === 'UAV'}` blocks | Only if the card should change with the HUD |
+| `App.svelte` | HUD panel + USV1/UAV1 tabs | Only if the layout changes (e.g. two HUDs side by side) |
+
+Do not change these when swapping the HUD. They hold safety and timing behaviour that every
+renderer relies on:
+
+- `lib/frameClock.ts`: one rAF loop.
+- `lib/attitude.ts`: extrapolation and ease (logic 0).
+- `lib/gate.ts`: UI update gate (logic 2).
+- `lib/source.ts` and `lib/sources.ts`: LIVE/STALE/OFFLINE.
+- The NOT LIVE overlay in `Hud.svelte`. Every renderer must stay under it, so a frozen display is
+  never read as a still vehicle.

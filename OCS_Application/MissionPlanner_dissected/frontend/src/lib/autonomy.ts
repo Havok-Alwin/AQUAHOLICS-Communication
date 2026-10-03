@@ -38,12 +38,3 @@ export function flightPhase(cs: Partial<CurrentStateFields>): FlightPhase {
       return 'UNKNOWN';
   }
 }
-
-/** Plain facts the operator must see at once. Numeric thresholds (battery, EKF, vibration) are logic 6. */
-export function alerts(cs: Partial<CurrentStateFields>): string[] {
-  const out: string[] = [];
-  if (cs.failsafe) out.push('FAILSAFE');
-  if (cs.prearmstatus === false) out.push('PRE-ARM FAIL');
-  if (cs.gpsstatus !== undefined && cs.gpsstatus < 3) out.push('NO 3D FIX');
-  return out;
-}

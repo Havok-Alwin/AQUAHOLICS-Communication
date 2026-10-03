@@ -19,13 +19,13 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  logic 0, 1, 2 and 5 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
+  logic 0, 1, 2, 5 and 6 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
   messages, and that file is excluded from production builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review logic 5. Order agreed 2026-10-04: frontend items first (6 thresholds, 7 severity, 10 units,
+Review logic 6. Order agreed 2026-10-04: frontend items first (7 severity, 10 units,
 11 loop pacing), then the backend items (3 stream rates, 8 connect/link-lost, 9 commands) together
 with the backend. The .NET 10 check (a small console app
 that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
@@ -81,7 +81,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 | 3 | Stream-rate setup | `MAVLinkInterface.requestDatastream`; `cs.rateattitude/rateposition/ratestatus/ratesensors/raterc` (defaults 4/2/2/2) | Requests each MAVLink message group at its own rate | todo |
 | 4 | Invalidate on change | `HUD.set_roll` -> `Invalidate()` | MP's HUD is event-driven, not timer-driven (item 0 improves on this) | todo |
 | 5 | HUD geometry | `HUD.doPaint` | Pitch-ladder px/deg, ticks, heading tape, aircraft symbol, colours. Ported from the decompiled source (`ilspycmd`, see Reference material) in `hudDraw.ts`. It is a pure draw function and every size scales with the canvas as in MP. The status-line items (battery, GPS, link bars, clock, vibe, EKF, pre-arm, CPU) are not drawn on the HUD because the vehicle card shows them. For the USV, the altitude tape and AS line are off. Deviations, each with its reason in the file header: heading-tape target off the right edge (fixes an MP bug), wrap-aware off-tape check, dark heading readout, and the stacked ARMED/DISARMED/SAFE/FAILSAFE texts (MP's overlap). Low-speed flags await logic 6 and units await logic 10 | done |
-| 6 | Warning thresholds | `HUD.lowgroundspeed/lowairspeed/lowvoltagealert/criticalvoltagealert/failsafe/safetyactive` | When to alert the operator. Safety-relevant: port exactly | todo |
+| 6 | Warning thresholds | `FlightData.mainloop` (battery), `HUD.doPaint` (colour rules) | When to alert the operator. Safety-relevant: ported exactly in `warnings.ts`. **Battery:** thresholds come from the vehicle's params (`BATT_LOW_VOLT`, `BATT_CRT_VOLT`, `BATT_LOW_MAH`/`BATT_CRT_MAH` ÷ `BATT_CAPACITY` × 100). Critical falls back to low. Low when voltage ≤ low volt **or** remaining < low %; critical likewise with the critical thresholds. With no params, the battery shows "limits unknown" instead of MP's compare-against-0. **Inline doPaint rules:** GPS fix 0/1 red (2D is not); EKF > 0.5 orange, > 0.8 red; any vibe axis > 30 orange, > 60 red; link 0 % red; CPU load 100 red; SAFE red; pre-arm only while disarmed. **Not ported:** `lowairspeed`/`lowgroundspeed`, which MP only ever sets false (low speed exists only as an optional speech alert). Note: `battery_remaining` -1 (unknown) counts as < % like in MP. Shown as warning chips (critical first) and the battery tile colour on the vehicle card | done |
 | 7 | Status text severity | `cs.messageHigh`, `cs.messageHighSeverity` (`MAV_SEVERITY`) | Colour/priority of vehicle messages | todo |
 | 8 | Connect / link-lost | `MainV2` connect flow | Open link, request streams, detect lost heartbeat so a frozen display is not read as a still vehicle | todo |
 | 9 | Commands | `MAVLinkInterface.doARM`, `setMode`, `doCommand` | Arm/disarm, mode change; mode lists differ per vehicle type | todo |
@@ -109,6 +109,10 @@ Backend requirements found in the IL (for when the vehicle backend is designed):
     at `ratesensors`, RC_CHANNELS at `raterc`. After a re-request it waits 30 s before retrying.
 
   `~/Test_frontend` `Bridge.cs` never calls it, so the prototype's link quality never updates.
+- **Send each vehicle's battery params to the frontend** as a link B message `{ch:'params', vehicle,
+  params:{BATT_LOW_VOLT, BATT_CRT_VOLT, BATT_LOW_MAH, BATT_CRT_MAH, BATT_CAPACITY}}`. Send it on
+  connect and whenever they change. This needs a param fetch: MP reads `MAV.param`, and
+  `Open(getparams:false)` skips the download, so fetch these five explicitly.
 - **Per-client push to the frontend must not queue.** Like MP's pending-update skip, keep only the
   latest SLOW snapshot per vehicle per client, and drop older ones if the socket is slow. The
   frontend gate (`gate.ts`) protects the UI, but it cannot stop a backlog building in the socket.

@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { alerts, flightPhase, robotState } from '../lib/autonomy';
+  import { flightPhase, robotState } from '../lib/autonomy';
   import { GROUP_LABEL, bindingsFor, formatBinding, type Binding, type Group } from '../lib/bindings';
   import { VEHICLE_TYPE, type VehicleId } from '../lib/config';
   import { formatAge } from '../lib/source';
   import { vehicles } from '../lib/sources';
-  import { attitude, vehicleState } from '../lib/telemetry';
+  import { attitude, vehicleParams, vehicleState } from '../lib/telemetry';
+  import { batteryLevel, batteryThresholds, warnings } from '../lib/warnings';
 
   let { vehicle }: { vehicle: VehicleId } = $props();
 
@@ -16,7 +17,9 @@
 
   const state = $derived(robotState(type, $cs));
   const phase = $derived(flightPhase($cs));
-  const active = $derived(alerts($cs));
+  const params = $derived(vehicleParams[vehicle]);
+  const battery = $derived(batteryLevel($cs, batteryThresholds($params)));
+  const active = $derived(warnings($cs, battery));
   // Heading from the attitude track (FAST channel), sampled whenever the SLOW snapshot updates.
   const heading = $derived.by(() => {
     void $cs;
@@ -60,21 +63,25 @@
     </div>
     <div class="task">Task <b>—</b> <span class="hint">(set by OCS, not wired yet)</span></div>
 
-    <!-- 2. Alerts: only when something is wrong -->
+    <!-- 2. Warnings (logic 6): only when something is wrong -->
     <div class="alerts">
-      {#each active as a (a)}
-        <span class="alert">{a}</span>
+      {#each active as w (w.id)}
+        <span class="alert {w.level}">{w.text}</span>
       {:else}
-        <span class="ok">No alerts</span>
+        <span class="ok">No warnings</span>
       {/each}
     </div>
 
     <!-- 3. Key numbers -->
     <div class="tiles">
-      <div class="tile">
+      <div class="tile batt-{battery}">
         <span class="k">Battery</span>
         <span class="v mono">{n($cs.battery_voltage, 1, ' V')}</span>
-        <span class="s mono">{n($cs.battery_remaining, 0, ' %')}</span>
+        <span class="s mono"
+          >{n($cs.battery_remaining, 0, ' %')}{battery === 'unknown' && $cs.battery_voltage !== undefined
+            ? ' · limits unknown'
+            : ''}</span
+        >
       </div>
       <div class="tile">
         <span class="k">GPS</span>
@@ -213,12 +220,29 @@
     min-height: 1.4rem;
   }
   .alert {
-    background: var(--offline);
     color: #000;
     font-weight: 700;
     font-size: 0.75rem;
     padding: 0.1rem 0.45rem;
     border-radius: 3px;
+  }
+  .alert.critical {
+    background: var(--offline);
+  }
+  .alert.warn {
+    background: var(--stale);
+  }
+  .batt-critical {
+    border-color: var(--offline);
+  }
+  .batt-critical .v {
+    color: var(--offline);
+  }
+  .batt-low {
+    border-color: var(--stale);
+  }
+  .batt-low .v {
+    color: var(--stale);
   }
   .ok {
     color: var(--live);

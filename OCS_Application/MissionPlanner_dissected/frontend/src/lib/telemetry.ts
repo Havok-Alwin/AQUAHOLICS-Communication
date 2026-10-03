@@ -4,6 +4,7 @@ import { VEHICLES, type VehicleId } from './config';
 import type { CurrentStateFields } from './currentState';
 import { createGate, type Gate } from './gate';
 import { vehicleBackend, vehicles } from './sources';
+import type { BatteryParams } from './warnings';
 
 // Logic 0: link B carries two channels per vehicle.
 //   FAST: roll/pitch/yaw, pushed only when the value changes (~20 Hz while moving).
@@ -30,7 +31,14 @@ export interface SlowMsg {
   cs: Partial<CurrentStateFields>;
 }
 
-export type LinkBMsg = FastMsg | SlowMsg;
+/** Vehicle parameters the frontend needs (logic 6). Sent on connect and whenever they change. */
+export interface ParamsMsg {
+  ch: 'params';
+  vehicle: VehicleId;
+  params: BatteryParams;
+}
+
+export type LinkBMsg = FastMsg | SlowMsg | ParamsMsg;
 
 export const attitude: Record<VehicleId, AttitudeTrack> = Object.fromEntries(
   VEHICLES.map((id) => [id, new AttitudeTrack()]),
@@ -52,10 +60,20 @@ const gates = Object.fromEntries(
   VEHICLES.map((id) => [id, createGate<Snapshot>((cs) => stores[id].set(cs))]),
 ) as Record<VehicleId, Gate<Snapshot>>;
 
+const paramStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<BatteryParams | undefined>(undefined)])) as Record<
+  VehicleId,
+  Writable<BatteryParams | undefined>
+>;
+
+/** Latest vehicle parameters per vehicle; undefined until the backend sends them. */
+export const vehicleParams: Record<VehicleId, Readable<BatteryParams | undefined>> = paramStores;
+
 export function handleLinkB(msg: LinkBMsg): void {
   if (!(msg.vehicle in vehicles)) return;
   if (msg.ch === 'att') {
     attitude[msg.vehicle].push({ t: msg.t, roll: msg.r, pitch: msg.p, yaw: msg.y });
+  } else if (msg.ch === 'params') {
+    paramStores[msg.vehicle].set(msg.params);
   } else {
     // Replace, never merge: a field the backend stopped sending must not linger as current.
     gates[msg.vehicle].push(msg.cs);

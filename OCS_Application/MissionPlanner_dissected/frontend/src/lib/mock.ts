@@ -45,7 +45,8 @@ function statusAt(id: VehicleId, tMs: number): Partial<CurrentStateFields> {
     failsafe: false,
     safetyactive: false,
     prearmstatus: true,
-    ekfstatus: 0.1 + 0.05 * Math.sin(s / 7),
+    // USV EKF drifts past MP's 0.5 warning level every ~2 min so the warning chip can be reviewed.
+    ekfstatus: uav ? 0.1 + 0.05 * Math.sin(s / 7) : 0.35 + 0.3 * Math.sin(s / 20),
     landed_state: uav ? 2 : 0,
     groundspeed: (uav ? 4 : 1.5) + 0.3 * Math.sin(s / 3),
     airspeed: uav ? 4.2 : 0,
@@ -85,6 +86,9 @@ export function startMock(): () => void {
   // Real per-vehicle link state comes from the backend's connect / link-lost logic (logic 8).
   vehicleBackend.setConnected(true);
   for (const id of VEHICLES) vehicles[id].setConnected(true);
+  // Battery thresholds as the backend would read them from the vehicle (USV 4S, UAV 6S).
+  handleLinkB({ ch: 'params', vehicle: 'USV1', params: { BATT_LOW_VOLT: 14.0, BATT_CRT_VOLT: 13.2, BATT_CAPACITY: 10000, BATT_LOW_MAH: 2000, BATT_CRT_MAH: 1000 } });
+  handleLinkB({ ch: 'params', vehicle: 'UAV1', params: { BATT_LOW_VOLT: 21.0, BATT_CRT_VOLT: 19.8, BATT_CAPACITY: 5000, BATT_LOW_MAH: 1000, BATT_CRT_MAH: 500 } });
   const last = new Map<VehicleId, string>();
   const timers: ReturnType<typeof setTimeout>[] = [];
 

@@ -1,7 +1,8 @@
-import { writable, type Writable } from 'svelte/store';
+import { writable, type Readable, type Writable } from 'svelte/store';
 import { AttitudeTrack } from './attitude';
 import { VEHICLES, type VehicleId } from './config';
 import type { CurrentStateFields } from './currentState';
+import { createGate, type Gate } from './gate';
 import { vehicleBackend, vehicles } from './sources';
 
 // Logic 0: link B carries two channels per vehicle.
@@ -35,10 +36,21 @@ export const attitude: Record<VehicleId, AttitudeTrack> = Object.fromEntries(
   VEHICLES.map((id) => [id, new AttitudeTrack()]),
 ) as Record<VehicleId, AttitudeTrack>;
 
+type Snapshot = Partial<CurrentStateFields>;
+
+const stores = Object.fromEntries(VEHICLES.map((id) => [id, writable<Snapshot>({})])) as Record<
+  VehicleId,
+  Writable<Snapshot>
+>;
+
 /** Latest SLOW snapshot per vehicle. Display it as live only while the vehicle Source is 'live'. */
-export const vehicleState: Record<VehicleId, Writable<Partial<CurrentStateFields>>> = Object.fromEntries(
-  VEHICLES.map((id) => [id, writable({})]),
-) as Record<VehicleId, Writable<Partial<CurrentStateFields>>>;
+export const vehicleState: Record<VehicleId, Readable<Snapshot>> = stores;
+
+// Logic 2: snapshots reach the UI through the update gate (<= 10 Hz, latest wins).
+// Freshness (markUpdate) is NOT gated: staleness must use the true arrival time.
+const gates = Object.fromEntries(
+  VEHICLES.map((id) => [id, createGate<Snapshot>((cs) => stores[id].set(cs))]),
+) as Record<VehicleId, Gate<Snapshot>>;
 
 export function handleLinkB(msg: LinkBMsg): void {
   if (!(msg.vehicle in vehicles)) return;
@@ -46,7 +58,7 @@ export function handleLinkB(msg: LinkBMsg): void {
     attitude[msg.vehicle].push({ t: msg.t, roll: msg.r, pitch: msg.p, yaw: msg.y });
   } else {
     // Replace, never merge: a field the backend stopped sending must not linger as current.
-    vehicleState[msg.vehicle].set(msg.cs);
+    gates[msg.vehicle].push(msg.cs);
     vehicles[msg.vehicle].markUpdate();
     vehicleBackend.markUpdate();
   }

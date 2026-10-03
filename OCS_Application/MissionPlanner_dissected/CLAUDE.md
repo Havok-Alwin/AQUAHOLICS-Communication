@@ -19,13 +19,13 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  logic 0 and 1 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
+  logic 0, 1 and 2 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
   messages, and that file is excluded from production builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review logic 1. Then the remaining logic items one at a time, starting with 2 (update gate). The .NET 10 check (a small console app
+Review logic 2. Then the remaining logic items one at a time, starting with 3 (stream-rate setup). The .NET 10 check (a small console app
 that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
 roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
 
@@ -73,7 +73,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 |---|---|---|---|---|
 | 0 | Rendering pipeline (our own, tested in `~/Test_frontend`) | not MP | Per-stream rates instead of `ALL @ 4 Hz`; fast channel (roll/pitch/yaw, pushed on change, ~20 Hz) vs slow channel (status, 2 Hz); draw on a fixed frame clock (`requestAnimationFrame`), extrapolate with velocity from the last two samples, light 15 ms ease. Simulation at 20 Hz: RMS error 1.4 deg -> 0.7 deg, biggest frame jump 4.7 -> 1.8 deg. At 4 Hz no smoothing helps, so the data rate is the real fix. Frontend: `frameClock.ts`, `attitude.ts`, `telemetry.ts` (FAST/SLOW message types), `Hud.svelte`. Liveness comes from SLOW, because FAST is sent on change only. Backend side (per-stream rates) is logic 3 | done |
 | 1 | Binding map | `FlightData.InitializeComponent` (72 `Binding`s) | HUD field <- `CurrentState` field, e.g. heading<-yaw, status<-armed, message<-messageHigh, gpsfix<-gpsstatus, batterylevel<-battery_voltage, navroll<-nav_roll, targetheading<-nav_bearing, disttowp<-wp_dist, groundalt<-HomeAlt, plus ekfstatus, prearmstatus, failsafe, linkqualitygcs, vibex/y/z. The 72 bindings are 70 fixed in `InitializeComponent` plus 2 user-configurable QuickViews; all 6 BindingSources point at `CurrentState`. Ported subset with reasons for each exclusion: `bindings.ts`. Field names and types from the ArduPilot DLL IL: `currentState.ts`. The SLOW message carries `cs: Partial<CurrentStateFields>` and replaces the snapshot, never merges it | done |
-| 2 | Update gate | `CurrentState.UpdateCurrentSettings` | Pushes to UI at most every 50 ms (20 Hz) | todo |
+| 2 | Update gate | `CurrentState.UpdateCurrentSettings`, `FlightData.updateBindingSource` | **Corrected from the IL:** the 50 ms gate in `UpdateCurrentSettings` covers only housekeeping; the UI-push callback runs every call. The real UI gate is `FlightData.updateBindingSource`: at most every 100 ms, it skips while a previous UI update is still pending (5 s watchdog), and it only pushes bindings for the visible tab. Frontend: `gate.ts` (100 ms, keeps the latest value, `cancel()`) applied to SLOW snapshots in `telemetry.ts`. Freshness (`markUpdate`) is not gated. Backend requirements: see "Backend requirements found in the IL" | done |
 | 3 | Stream-rate setup | `MAVLinkInterface.requestDatastream`; `cs.rateattitude/rateposition/ratestatus/ratesensors/raterc` (defaults 4/2/2/2) | Requests each MAVLink message group at its own rate | todo |
 | 4 | Invalidate on change | `HUD.set_roll` -> `Invalidate()` | MP's HUD is event-driven, not timer-driven (item 0 improves on this) | todo |
 | 5 | HUD geometry | `HUD.doPaint` | Pitch-ladder px/deg, ticks, heading tape, aircraft symbol, colours | todo |
@@ -90,7 +90,24 @@ ADS-B, no-fly zones, scripting. `FlightData` is 292 methods with ~5,400 WinForms
 
 Facts found while reading the IL:
 
-- MP's HUD repaints when a bound value changes; values update at most every 50 ms.
+- MP's HUD repaints when a bound value changes. Bound values reach the UI at most every 100 ms
+  (`FlightData.updateBindingSource`), not every 50 ms as first assumed.
+
+Backend requirements found in the IL (for when the vehicle backend is designed):
+
+- **Call `cs.UpdateCurrentSettings(null, false, mav, mav.MAV)` regularly (MP: every mainloop pass).**
+  Its housekeeping, gated to at most every 50 ms, does three things:
+  - Sets `linkqualitygcs` = `packetsnotlost / (packetsnotlost + packetslost) * 100`, capped at 100,
+    and sets it to **0 if no valid packet for > 10 s**.
+  - Once per second: `distTraveled`, `timeInAir`, the wind estimate.
+  - If no data for **8 s** and the port is open, **re-requests every data stream**: EXTENDED_STATUS
+    and POSITION at `ratestatus`/`rateposition`, EXTRA1/EXTRA2 at `rateattitude`, EXTRA3/RAW_SENSORS
+    at `ratesensors`, RC_CHANNELS at `raterc`. After a re-request it waits 30 s before retrying.
+
+  `~/Test_frontend` `Bridge.cs` never calls it, so the prototype's link quality never updates.
+- **Per-client push to the frontend must not queue.** Like MP's pending-update skip, keep only the
+  latest SLOW snapshot per vehicle per client, and drop older ones if the socket is slow. The
+  frontend gate (`gate.ts`) protects the UI, but it cannot stop a backlog building in the socket.
 - Core DLLs (`MissionPlanner.ArduPilot`, `Comms`, `MAVLink`, `Utilities`, `Interfaces`) target
   .NET Standard 2.0, so they can run on Mono or modern .NET. Their transitive dependencies are not
   yet checked on modern .NET.

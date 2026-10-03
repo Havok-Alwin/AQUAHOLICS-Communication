@@ -3,12 +3,13 @@
 // SLOW status at 2 Hz, with arrival jitter.
 import { VEHICLES, type VehicleId } from './config';
 import type { CurrentStateFields } from './currentState';
+import { LINK_B } from './pacing';
 import { MESSAGE_HIGH_HOLD_MS, messageHighFrom } from './severity';
 import { vehicleBackend, vehicles } from './sources';
 import { handleLinkB } from './telemetry';
 
-const FAST_HZ = 20;
-const SLOW_HZ = 2;
+const FAST_HZ = LINK_B.fastHz;
+const SLOW_HZ = LINK_B.slowHz;
 const JITTER_MS = 15;
 
 // Gentle motion for the boat, larger for the drone.

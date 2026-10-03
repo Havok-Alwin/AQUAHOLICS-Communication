@@ -1,3 +1,5 @@
+import { UI_UPDATE_MIN_MS } from './pacing';
+
 // Logic 2: update gate, ported from MissionPlanner FlightData.updateBindingSource (1.3.x IL):
 //   - push to the UI at most every 100 ms;
 //   - never queue a second UI update while one is pending (MP skips; we keep only the latest value);
@@ -11,8 +13,6 @@ export interface Gate<T> {
   /** Drop a pending value (e.g. on disconnect) so nothing old is applied later. */
   cancel(): void;
 }
-
-export const UI_UPDATE_MIN_MS = 100; // FlightData.updateBindingSource: lastscreenupdate + 100 ms
 
 export function createGate<T>(
   apply: (value: T) => void,

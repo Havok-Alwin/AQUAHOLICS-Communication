@@ -1,4 +1,5 @@
-import { STALE_AFTER_MS, VEHICLES, type VehicleId } from './config';
+import { VEHICLES, type VehicleId } from './config';
+import { STALE_AFTER_MS } from './pacing';
 import { createSource, type Source } from './source';
 
 // The sources on the display. Transports (link B WebSocket, link C SSE) are

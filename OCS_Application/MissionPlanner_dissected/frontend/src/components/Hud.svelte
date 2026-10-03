@@ -4,6 +4,7 @@
   import { VEHICLE_TYPE, type VehicleId } from '../lib/config';
   import type { CurrentStateFields } from '../lib/currentState';
   import { onFrame } from '../lib/frameClock';
+  import { STATS_MS } from '../lib/pacing';
   import { drawHud, type HudInput } from '../lib/hudDraw';
   import { displayUnits, factor, type DisplayUnits } from '../lib/units';
   import { formatAge, type SourceStatus } from '../lib/source';
@@ -66,7 +67,7 @@
       const pkts = attitude[vehicle].takePacketCount();
       stats = `draw ${frames} fps · attitude ${pkts} pkt/s`;
       frames = 0;
-    }, 1000);
+    }, STATS_MS);
 
     return () => {
       stopFrames();

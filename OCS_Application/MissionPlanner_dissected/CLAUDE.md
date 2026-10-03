@@ -19,16 +19,22 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  logic 0, 1, 2, 5, 6, 7 and 10 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
-  messages, and that file is excluded from production builds.
+  all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. There is no link B/C transport yet.
+  In mock mode, `src/lib/mock.ts` feeds link B messages, and that file is excluded from production
+  builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review logic 10. Order agreed 2026-10-04: frontend items first (11 loop pacing is the last), then the backend items (3 stream rates, 8 connect/link-lost, 9 commands) together
-with the backend. The .NET 10 check (a small console app
-that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
-roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
+Review logic 11. All frontend logic items are done. Remaining work:
+- Frontend, not in the logic table: the map (Leaflet, local base layer, Task 4 keep-out areas and the
+  moving object, using the cadence in `pacing.ts`); the RoboCommand panel (link C); the transport
+  clients (link B WebSocket, link C SSE) that call `handleLinkB` and set the Sources connected.
+- Backend logic items, built with the backend: 3 (stream rates), 8 (connect/link-lost),
+  9 (commands). See "Backend requirements found in the IL".
+
+The .NET 10 check (a small console app that loads `backend/MissionPlanner.ArduPilot.dll`, connects
+to the Pixhawk on USB and prints roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
 
 ## Reference material (outside this folder)
 
@@ -85,7 +91,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 | 8 | Connect / link-lost | `MainV2` connect flow | Open link, request streams, detect lost heartbeat so a frozen display is not read as a still vehicle | todo |
 | 9 | Commands | `MAVLinkInterface.doARM`, `setMode`, `doCommand` | Arm/disarm, mode change; mode lists differ per vehicle type | todo |
 | 10 | Units | `CurrentState.multiplierspeed/multiplieralt/multiplierdist`, `MainV2.ChangeUnits` | Unit conversion, no hard-coded units. MP converts **inside the CurrentState getters** with process-wide static multipliers: speed (groundspeed, airspeed, verticalspeed, targetairspeed) × {m/s 1, fps 3.28084, kph 3.6, mph 2.2369363, kts 1.9438444}; alt (alt, altasl, targetalt) and dist (wp_dist, DistToHome) × {m 1, ft 3.28084}. MP never converts HomeAlt (MP bug: ground band wrong in ft) or xtrack_error; turnrate uses the converted groundspeed. **Our design:** backend multipliers stay 1, so link B is always SI (link A must be: `spd_mps`, metres). The frontend converts for display only: `units.ts` (MP factors/labels), `kind` on bindings, card tiles, HUD tapes/texts. HomeAlt is converted with alt (fixes the MP bug); xtrack stays m. Operator picks units in the top bar (`UnitsSelect.svelte`, remembered per browser) | done |
-| 11 | Loop pacing | `FlightData.mainloop` (40 / 75 / 300 ms timers) | Different work at different rates (MP's fast/slow split) | todo |
+| 11 | Loop pacing | `FlightData.mainloop` (50 ms loop; 40 / 75 / 300 ms, 3 s, 5 s timers) | Different work at different rates (MP's fast/slow split). MP runs one thread sleeping 50 ms per pass: CurrentState housekeeping, gated UI push (100 ms) and battery check every pass; AVI 40 ms, tuning graph 75 ms, log playback 300 ms, transponder 5 s (none ported); map marker + track every `FD_MapUpdateDelay` 0.3 s (2 s while disconnected, track capped at 200 points), auto-pan 3 s, mission overlay 5 s; ADS-B / avoidance markers hidden after 30 s / 10 s. **Frontend:** `pacing.ts` holds every cadence with its MP source: rAF frame clock, 100 ms UI gate, 250 ms wall clock, 1 s stats, link B 20 Hz / 2 Hz, STALE thresholds (moved from `config.ts`), and MP's map cadence for the map to come. Deviation: a Task 4 moving object older than 10 s is drawn STALE at its last known position, not hidden | done |
 
 Do not port: GMap map, ZedGraph, `InitializeComponent` layout, video/AVI, 3D, speech, joystick,
 ADS-B, no-fly zones, scripting. `FlightData` is 292 methods with ~5,400 WinForms references;

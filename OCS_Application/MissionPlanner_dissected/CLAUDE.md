@@ -19,13 +19,13 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  logic 0, 1, 2, 5, 6 and 7 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
+  logic 0, 1, 2, 5, 6, 7 and 10 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
   messages, and that file is excluded from production builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review logic 7. Order agreed 2026-10-04: frontend items first (10 units, 11 loop pacing), then the backend items (3 stream rates, 8 connect/link-lost, 9 commands) together
+Review logic 10. Order agreed 2026-10-04: frontend items first (11 loop pacing is the last), then the backend items (3 stream rates, 8 connect/link-lost, 9 commands) together
 with the backend. The .NET 10 check (a small console app
 that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
 roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
@@ -84,7 +84,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 | 7 | Status text severity | `cs.messageHigh`, `cs.messageHighSeverity` (`MAV_SEVERITY`); `MAVLinkInterface` STATUSTEXT (msg 253) | Colour/priority of vehicle messages. **Selection runs in the backend (MP DLL):** a STATUSTEXT becomes `messageHigh` if severity ≤ Settings `severity` (default 4 = WARNING), or if it starts with `PreArm:`/`Arm:`/`Tuning:` (then stamped EMERGENCY). `CurrentState` also sets it itself (fence breach, EKF/sensor health) as EMERGENCY. The getter reads back "" 10 s after it was set; identical text does not refresh it. Every STATUSTEXT goes to `cs.messages` (last 1000). **Frontend:** `severity.ts` (rules + colour: ≤3 red, 4 yellow, else white, shared with the HUD); card message line coloured by severity ("No vehicle message" when clear); collapsible "Messages (n)" log per vehicle (1000 kept, 50 shown, newest first) fed by a new link B `statustext` message | done |
 | 8 | Connect / link-lost | `MainV2` connect flow | Open link, request streams, detect lost heartbeat so a frozen display is not read as a still vehicle | todo |
 | 9 | Commands | `MAVLinkInterface.doARM`, `setMode`, `doCommand` | Arm/disarm, mode change; mode lists differ per vehicle type | todo |
-| 10 | Units | `CurrentState.multiplierspeed/multiplieralt/AltUnit` | Unit conversion, no hard-coded units | todo |
+| 10 | Units | `CurrentState.multiplierspeed/multiplieralt/multiplierdist`, `MainV2.ChangeUnits` | Unit conversion, no hard-coded units. MP converts **inside the CurrentState getters** with process-wide static multipliers: speed (groundspeed, airspeed, verticalspeed, targetairspeed) × {m/s 1, fps 3.28084, kph 3.6, mph 2.2369363, kts 1.9438444}; alt (alt, altasl, targetalt) and dist (wp_dist, DistToHome) × {m 1, ft 3.28084}. MP never converts HomeAlt (MP bug: ground band wrong in ft) or xtrack_error; turnrate uses the converted groundspeed. **Our design:** backend multipliers stay 1, so link B is always SI (link A must be: `spd_mps`, metres). The frontend converts for display only: `units.ts` (MP factors/labels), `kind` on bindings, card tiles, HUD tapes/texts. HomeAlt is converted with alt (fixes the MP bug); xtrack stays m. Operator picks units in the top bar (`UnitsSelect.svelte`, remembered per browser) | done |
 | 11 | Loop pacing | `FlightData.mainloop` (40 / 75 / 300 ms timers) | Different work at different rates (MP's fast/slow split) | todo |
 
 Do not port: GMap map, ZedGraph, `InitializeComponent` layout, video/AVI, 3D, speech, joystick,
@@ -116,6 +116,9 @@ Backend requirements found in the IL (for when the vehicle backend is designed):
   (hook `OnPacketReceived` for msg 253: `cs.messages` has no severity). Never drop these: a slow
   client may coalesce SLOW snapshots, but status texts are a log. Keep MP's Settings `severity` at
   its default 4 so `messageHigh` selection matches the frontend's assumptions.
+- **Never call `MainV2.ChangeUnits`-style code: keep `CurrentState.multiplierspeed/alt/dist` at 1.**
+  They are static (process-wide), so any change would also corrupt the link A heartbeat to
+  RoboCommand. Assert this at startup. Unit conversion is display-only, in the frontend.
 - **Per-client push to the frontend must not queue.** Like MP's pending-update skip, keep only the
   latest SLOW snapshot per vehicle per client, and drop older ones if the socket is slow. The
   frontend gate (`gate.ts`) protects the UI, but it cannot stop a backlog building in the socket.

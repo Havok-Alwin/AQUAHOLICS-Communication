@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { VEHICLE_TYPE, type VehicleId } from '../lib/config';
   import type { CurrentStateFields } from '../lib/currentState';
   import { onFrame } from '../lib/frameClock';
   import { drawHud, type HudInput } from '../lib/hudDraw';
+  import { displayUnits, factor, type DisplayUnits } from '../lib/units';
   import { formatAge, type SourceStatus } from '../lib/source';
   import { vehicles } from '../lib/sources';
   import { attitude, vehicleState } from '../lib/telemetry';
@@ -23,7 +25,9 @@
   let lastArmed: boolean | undefined;
   let lastMode: string | undefined;
 
+  let units: DisplayUnits = get(displayUnits);
   $effect(() => vehicles[vehicle].status.subscribe((s) => (status = s)));
+  $effect(() => displayUnits.subscribe((u) => (units = u)));
   $effect(() => {
     // New vehicle selected: forget the previous vehicle's timers.
     lastArmed = lastMode = undefined;
@@ -76,6 +80,11 @@
   function draw(g: CanvasRenderingContext2D, W: number, H: number, nowMs: number) {
     const a = attitude[vehicle].shown;
     const type = VEHICLE_TYPE[vehicle];
+    // Logic 10: tapes and texts in display units, like MP (its CurrentState getters convert).
+    // xtrack_error and turnrate stay SI: MP does not convert them.
+    const sp = factor(units, 'speed');
+    const al = factor(units, 'alt');
+    const di = factor(units, 'dist');
     const input: HudInput = {
       roll: a.roll,
       pitch: a.pitch,
@@ -84,15 +93,15 @@
       groundcourse: num(cs.groundcourse),
       xtrack_error: num(cs.xtrack_error),
       turnrate: num(cs.turnrate),
-      airspeed: num(cs.airspeed),
-      groundspeed: num(cs.groundspeed),
-      targetspeed: num(cs.targetairspeed),
-      alt: num(cs.alt),
-      targetalt: num(cs.targetalt),
-      groundalt: num(cs.HomeAlt),
-      verticalspeed: num(cs.verticalspeed),
+      airspeed: num(cs.airspeed) * sp,
+      groundspeed: num(cs.groundspeed) * sp,
+      targetspeed: num(cs.targetairspeed) * sp,
+      alt: num(cs.alt) * al,
+      targetalt: num(cs.targetalt) * al,
+      groundalt: num(cs.HomeAlt) * al, // MP leaves HomeAlt in metres; converted so it matches alt
+      verticalspeed: num(cs.verticalspeed) * sp,
       mode: cs.mode ?? '',
-      disttowp: num(cs.wp_dist),
+      disttowp: num(cs.wp_dist) * di,
       wpno: num(cs.wpno),
       armed: cs.armed ?? false,
       safetyactive: cs.safetyactive ?? false,
@@ -107,9 +116,9 @@
       showAirspeed: type === 'UAV',
       armedRecently: nowMs - armedAt < 8000,
       modeRecentlyChanged: nowMs - modeChangedAt < 2000,
-      speedunit: 'm/s', // logic 10
-      altunit: 'm',
-      distunit: 'm',
+      speedunit: units.speed,
+      altunit: units.alt,
+      distunit: units.dist,
     });
 
     // A frozen HUD must never be read as a still vehicle.

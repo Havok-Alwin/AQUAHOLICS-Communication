@@ -2,6 +2,7 @@
   import { MOCK } from '../lib/mode';
   import { ocs, vehicleBackend } from '../lib/sources';
   import SourceBadge from './SourceBadge.svelte';
+  import UnitsSelect from './UnitsSelect.svelte';
 </script>
 
 {#if MOCK}
@@ -11,6 +12,7 @@
   <strong class="title">AQUAHOLICS OCS</strong>
   <span class="mode {MOCK ? 'is-mock' : 'is-real'}">{MOCK ? 'MOCK MODE' : 'REAL MODE'}</span>
   <span class="spacer"></span>
+  <UnitsSelect />
   <span class="link">Vehicle backend <SourceBadge source={vehicleBackend} /></span>
   <span class="link">OCS <SourceBadge source={ocs} /></span>
 </div>

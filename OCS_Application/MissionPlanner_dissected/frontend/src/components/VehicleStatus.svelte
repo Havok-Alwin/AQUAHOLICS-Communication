@@ -5,6 +5,7 @@
   import { formatAge } from '../lib/source';
   import { vehicles } from '../lib/sources';
   import { severityLevel, severityName } from '../lib/severity';
+  import { displayUnits, toDisplay, type UnitKind } from '../lib/units';
   import { attitude, vehicleLog, vehicleParams, vehicleState } from '../lib/telemetry';
   import { batteryLevel, batteryThresholds, warnings } from '../lib/warnings';
 
@@ -34,6 +35,9 @@
   const GPS_FIX = ['No GPS', 'No fix', '2D', '3D', 'DGPS', 'RTK float', 'RTK fixed', 'Static', 'PPP'];
   const n = (v: number | undefined, dp: number, unit = '') =>
     v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(dp)}${unit}`;
+  // Logic 10: SI from the backend -> operator's display unit.
+  const u = (v: number | undefined, kind: UnitKind, dp: number) =>
+    v === undefined ? '—' : n(toDisplay($displayUnits, kind, v), dp, ' ' + $displayUnits[kind]);
 
   const groups = $derived(
     Object.entries(
@@ -98,7 +102,7 @@
       </div>
       <div class="tile">
         <span class="k">Speed</span>
-        <span class="v mono">{n($cs.groundspeed, 1, ' m/s')}</span>
+        <span class="v mono">{u($cs.groundspeed, 'speed', 1)}</span>
       </div>
       <div class="tile">
         <span class="k">Heading</span>
@@ -107,12 +111,12 @@
       {#if type === 'UAV'}
         <div class="tile">
           <span class="k">Altitude</span>
-          <span class="v mono">{n($cs.alt, 1, ' m')}</span>
+          <span class="v mono">{u($cs.alt, 'alt', 1)}</span>
         </div>
       {:else}
         <div class="tile">
           <span class="k">To WP</span>
-          <span class="v mono">{n($cs.wp_dist, 0, ' m')}</span>
+          <span class="v mono">{u($cs.wp_dist, 'dist', 0)}</span>
           <span class="s mono">WP {n($cs.wpno, 0)}</span>
         </div>
       {/if}
@@ -140,7 +144,7 @@
             <dl>
               {#each rows as b (b.cs)}
                 <dt title="{b.mp} ← CurrentState.{b.cs}">{b.label}</dt>
-                <dd class="mono">{formatBinding(b, $cs[b.cs])}</dd>
+                <dd class="mono">{formatBinding(b, $cs[b.cs], $displayUnits)}</dd>
               {/each}
             </dl>
           </div>

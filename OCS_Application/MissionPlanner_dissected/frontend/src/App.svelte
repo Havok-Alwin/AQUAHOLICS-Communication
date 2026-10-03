@@ -3,6 +3,7 @@
   import Panel from './components/Panel.svelte';
   import Placeholder from './components/Placeholder.svelte';
   import TopBar from './components/TopBar.svelte';
+  import VehicleStatus from './components/VehicleStatus.svelte';
   import { VEHICLES, type VehicleId } from './lib/config';
   import { ocs, vehicles } from './lib/sources';
 
@@ -15,7 +16,7 @@
     <div class="vehicles">
       {#each VEHICLES as id (id)}
         <Panel title={id} source={vehicles[id]}>
-          <Placeholder text="Status: armed / mode / battery / GPS (logic 1, 6, 7)" />
+          <VehicleStatus vehicle={id} />
         </Panel>
       {/each}
     </div>

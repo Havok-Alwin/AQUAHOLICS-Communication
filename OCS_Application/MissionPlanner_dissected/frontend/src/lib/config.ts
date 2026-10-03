@@ -2,6 +2,9 @@
 export const VEHICLES = ['USV1', 'UAV1'] as const;
 export type VehicleId = (typeof VEHICLES)[number];
 
+export type VehicleType = 'USV' | 'UAV';
+export const VEHICLE_TYPE: Record<VehicleId, VehicleType> = { USV1: 'USV', UAV1: 'UAV' };
+
 // How long without an update before a source is shown as STALE.
 // Provisional: revisit with logic 8 (connect / link-lost) and the radio data rate.
 export const STALE_AFTER_MS = {

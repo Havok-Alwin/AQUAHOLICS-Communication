@@ -13,6 +13,8 @@
 //     centre, a bug), and off-tape checks use the wrapped angle difference (MP ignores wrap at 0/360);
 //   - heading readout box: text is dark on the light box (MP draws white on near-white).
 
+import { severityLevel } from './severity';
+
 export interface HudInput {
   roll: number;
   pitch: number;
@@ -435,7 +437,8 @@ export function drawHud(g: CanvasRenderingContext2D, W: number, H: number, inp: 
     cy += size + 8;
   }
   if (inp.message) {
-    const color = inp.messageSeverity <= 3 ? RED : inp.messageSeverity > 4 ? WHITE : YELLOW;
+    const level = severityLevel(inp.messageSeverity);
+    const color = level === 'critical' ? RED : level === 'warn' ? YELLOW : WHITE;
     let size = num2 + 10;
     while (size > 4 && measure(inp.message, size) > W - 100) size--; // MP calcfontsize
     text(inp.message, size, color, -measure(inp.message, size) / 2, num7 / 3);

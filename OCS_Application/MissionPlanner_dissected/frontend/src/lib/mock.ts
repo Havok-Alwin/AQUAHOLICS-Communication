@@ -3,6 +3,7 @@
 // SLOW status at 2 Hz, with arrival jitter.
 import { VEHICLES, type VehicleId } from './config';
 import type { CurrentStateFields } from './currentState';
+import { MESSAGE_HIGH_HOLD_MS, messageHighFrom } from './severity';
 import { vehicleBackend, vehicles } from './sources';
 import { handleLinkB } from './telemetry';
 
@@ -77,9 +78,44 @@ function statusAt(id: VehicleId, tMs: number): Partial<CurrentStateFields> {
     vibex: 3,
     vibey: 3.5,
     vibez: 5,
-    messageHigh: 'MOCK: no real vehicle',
-    messageHighSeverity: 6,
+    ...messageHighAt(id, tMs),
   };
+}
+
+// STATUSTEXT script per vehicle (one every 4 s, cycling) to exercise logic 7's colours and log.
+const SCRIPT: Record<VehicleId, [number, string][]> = {
+  USV1: [
+    [6, 'MOCK: Mission: 1 WP'],
+    [6, 'MOCK: Reached waypoint #2'],
+    [5, 'MOCK: GPS 1: detected u-blox'],
+    [4, 'MOCK: EKF3 IMU0 yaw aligned'],
+    [6, 'MOCK: Reached waypoint #3'],
+  ],
+  UAV1: [
+    [6, 'MOCK: Takeoff complete'],
+    [6, 'MOCK: PreArm: Compass not calibrated'],
+    [2, 'MOCK: Crash: Disarming'],
+    [6, 'MOCK: Mission: 4 Land'],
+  ],
+};
+
+// What the backend's CurrentState.messageHigh would read back (MP setter + 10 s hold).
+const high = new Map<VehicleId, { text: string; severity: number; at: number }>();
+
+function messageHighAt(id: VehicleId, tMs: number): Partial<CurrentStateFields> {
+  const h = high.get(id);
+  if (!h || tMs - h.at > MESSAGE_HIGH_HOLD_MS) return { messageHigh: '', messageHighSeverity: 0 };
+  return { messageHigh: h.text, messageHighSeverity: h.severity };
+}
+
+function statustext(id: VehicleId, tMs: number, severity: number, text: string): void {
+  const pick = messageHighFrom(severity, text.replace(/^MOCK: /, ''));
+  if (pick) {
+    const cur = messageHighAt(id, tMs).messageHigh;
+    if (cur !== text) high.set(id, { text, severity: pick.severity, at: tMs });
+    else high.get(id)!.severity = pick.severity;
+  }
+  handleLinkB({ ch: 'statustext', vehicle: id, t: tMs, severity, text });
 }
 
 export function startMock(): () => void {
@@ -115,9 +151,22 @@ export function startMock(): () => void {
     }
   }, 1000 / SLOW_HZ);
 
+  const step = new Map<VehicleId, number>();
+  const texts = setInterval(() => {
+    const t = performance.now();
+    for (const id of VEHICLES) {
+      if (dropped(id, t)) continue;
+      const i = step.get(id) ?? 0;
+      const [severity, text] = SCRIPT[id][i % SCRIPT[id].length]!;
+      step.set(id, i + 1);
+      statustext(id, t, severity, text);
+    }
+  }, 4000);
+
   return () => {
     clearInterval(fast);
     clearInterval(slow);
+    clearInterval(texts);
     timers.forEach(clearTimeout);
     vehicleBackend.setConnected(false);
     for (const id of VEHICLES) vehicles[id].setConnected(false);

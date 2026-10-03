@@ -4,7 +4,8 @@
   import { VEHICLE_TYPE, type VehicleId } from '../lib/config';
   import { formatAge } from '../lib/source';
   import { vehicles } from '../lib/sources';
-  import { attitude, vehicleParams, vehicleState } from '../lib/telemetry';
+  import { severityLevel, severityName } from '../lib/severity';
+  import { attitude, vehicleLog, vehicleParams, vehicleState } from '../lib/telemetry';
   import { batteryLevel, batteryThresholds, warnings } from '../lib/warnings';
 
   let { vehicle }: { vehicle: VehicleId } = $props();
@@ -20,6 +21,9 @@
   const params = $derived(vehicleParams[vehicle]);
   const battery = $derived(batteryLevel($cs, batteryThresholds($params)));
   const active = $derived(warnings($cs, battery));
+  const log = $derived(vehicleLog[vehicle]);
+  const LOG_SHOWN = 50;
+  const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour12: false });
   // Heading from the attitude track (FAST channel), sampled whenever the SLOW snapshot updates.
   const heading = $derived.by(() => {
     void $cs;
@@ -114,7 +118,17 @@
       {/if}
     </div>
 
-    <div class="message" title={$cs.messageHigh}>{$cs.messageHigh || '—'}</div>
+    <!-- Vehicle's high-priority message (logic 7): coloured by MAV_SEVERITY, clears 10 s after it was set -->
+    {#if $cs.messageHigh}
+      <div
+        class="message {severityLevel($cs.messageHighSeverity ?? 0)}"
+        title="{severityName($cs.messageHighSeverity ?? 0)}: {$cs.messageHigh}"
+      >
+        {$cs.messageHigh}
+      </div>
+    {:else}
+      <div class="message none">No vehicle message</div>
+    {/if}
 
     <!-- 4. Everything else from the binding map, out of the way -->
     <details>
@@ -132,6 +146,21 @@
           </div>
         {/each}
       </div>
+    </details>
+
+    <details>
+      <summary>Messages ({$log.length})</summary>
+      <ol class="log mono">
+        {#each $log.slice(-LOG_SHOWN).reverse() as e, i ($log.length - i)}
+          <li class={severityLevel(e.severity)}>
+            <span class="time">{clock(e.at)}</span>
+            <span class="sev">{severityName(e.severity)}</span>
+            <span class="text">{e.text}</span>
+          </li>
+        {:else}
+          <li class="none">No messages yet</li>
+        {/each}
+      </ol>
     </details>
   </div>
 {/if}
@@ -286,6 +315,46 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .message.critical {
+    border-color: var(--offline);
+    color: var(--offline);
+    font-weight: 700;
+  }
+  .message.warn {
+    border-color: #e3b341;
+    color: #e3b341;
+    font-weight: 700;
+  }
+  .message.none {
+    color: var(--muted);
+  }
+
+  .log {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+    max-height: 10rem;
+    overflow: auto;
+    font-size: 0.75rem;
+  }
+  .log li {
+    display: grid;
+    grid-template-columns: auto 5.5rem 1fr;
+    gap: 0.5rem;
+    padding: 0.05rem 0;
+  }
+  .log .time {
+    color: var(--muted);
+  }
+  .log .critical {
+    color: var(--offline);
+  }
+  .log .warn {
+    color: #e3b341;
+  }
+  .log .none {
+    color: var(--muted);
   }
 
   summary {

@@ -19,14 +19,13 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  logic 0, 1, 2, 5 and 6 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
+  logic 0, 1, 2, 5, 6 and 7 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
   messages, and that file is excluded from production builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review logic 6. Order agreed 2026-10-04: frontend items first (7 severity, 10 units,
-11 loop pacing), then the backend items (3 stream rates, 8 connect/link-lost, 9 commands) together
+Review logic 7. Order agreed 2026-10-04: frontend items first (10 units, 11 loop pacing), then the backend items (3 stream rates, 8 connect/link-lost, 9 commands) together
 with the backend. The .NET 10 check (a small console app
 that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
 roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
@@ -82,7 +81,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 | 4 | Invalidate on change | `HUD.set_roll` -> `Invalidate()` | MP's HUD is event-driven, not timer-driven (item 0 improves on this) | todo |
 | 5 | HUD geometry | `HUD.doPaint` | Pitch-ladder px/deg, ticks, heading tape, aircraft symbol, colours. Ported from the decompiled source (`ilspycmd`, see Reference material) in `hudDraw.ts`. It is a pure draw function and every size scales with the canvas as in MP. The status-line items (battery, GPS, link bars, clock, vibe, EKF, pre-arm, CPU) are not drawn on the HUD because the vehicle card shows them. For the USV, the altitude tape and AS line are off. Deviations, each with its reason in the file header: heading-tape target off the right edge (fixes an MP bug), wrap-aware off-tape check, dark heading readout, and the stacked ARMED/DISARMED/SAFE/FAILSAFE texts (MP's overlap). Low-speed flags await logic 6 and units await logic 10 | done |
 | 6 | Warning thresholds | `FlightData.mainloop` (battery), `HUD.doPaint` (colour rules) | When to alert the operator. Safety-relevant: ported exactly in `warnings.ts`. **Battery:** thresholds come from the vehicle's params (`BATT_LOW_VOLT`, `BATT_CRT_VOLT`, `BATT_LOW_MAH`/`BATT_CRT_MAH` ÷ `BATT_CAPACITY` × 100). Critical falls back to low. Low when voltage ≤ low volt **or** remaining < low %; critical likewise with the critical thresholds. With no params, the battery shows "limits unknown" instead of MP's compare-against-0. **Inline doPaint rules:** GPS fix 0/1 red (2D is not); EKF > 0.5 orange, > 0.8 red; any vibe axis > 30 orange, > 60 red; link 0 % red; CPU load 100 red; SAFE red; pre-arm only while disarmed. **Not ported:** `lowairspeed`/`lowgroundspeed`, which MP only ever sets false (low speed exists only as an optional speech alert). Note: `battery_remaining` -1 (unknown) counts as < % like in MP. Shown as warning chips (critical first) and the battery tile colour on the vehicle card | done |
-| 7 | Status text severity | `cs.messageHigh`, `cs.messageHighSeverity` (`MAV_SEVERITY`) | Colour/priority of vehicle messages | todo |
+| 7 | Status text severity | `cs.messageHigh`, `cs.messageHighSeverity` (`MAV_SEVERITY`); `MAVLinkInterface` STATUSTEXT (msg 253) | Colour/priority of vehicle messages. **Selection runs in the backend (MP DLL):** a STATUSTEXT becomes `messageHigh` if severity ≤ Settings `severity` (default 4 = WARNING), or if it starts with `PreArm:`/`Arm:`/`Tuning:` (then stamped EMERGENCY). `CurrentState` also sets it itself (fence breach, EKF/sensor health) as EMERGENCY. The getter reads back "" 10 s after it was set; identical text does not refresh it. Every STATUSTEXT goes to `cs.messages` (last 1000). **Frontend:** `severity.ts` (rules + colour: ≤3 red, 4 yellow, else white, shared with the HUD); card message line coloured by severity ("No vehicle message" when clear); collapsible "Messages (n)" log per vehicle (1000 kept, 50 shown, newest first) fed by a new link B `statustext` message | done |
 | 8 | Connect / link-lost | `MainV2` connect flow | Open link, request streams, detect lost heartbeat so a frozen display is not read as a still vehicle | todo |
 | 9 | Commands | `MAVLinkInterface.doARM`, `setMode`, `doCommand` | Arm/disarm, mode change; mode lists differ per vehicle type | todo |
 | 10 | Units | `CurrentState.multiplierspeed/multiplieralt/AltUnit` | Unit conversion, no hard-coded units | todo |
@@ -113,6 +112,10 @@ Backend requirements found in the IL (for when the vehicle backend is designed):
   params:{BATT_LOW_VOLT, BATT_CRT_VOLT, BATT_LOW_MAH, BATT_CRT_MAH, BATT_CAPACITY}}`. Send it on
   connect and whenever they change. This needs a param fetch: MP reads `MAV.param`, and
   `Open(getparams:false)` skips the download, so fetch these five explicitly.
+- **Forward every STATUSTEXT** as a link B message `{ch:'statustext', vehicle, t, severity, text}`
+  (hook `OnPacketReceived` for msg 253: `cs.messages` has no severity). Never drop these: a slow
+  client may coalesce SLOW snapshots, but status texts are a log. Keep MP's Settings `severity` at
+  its default 4 so `messageHigh` selection matches the frontend's assumptions.
 - **Per-client push to the frontend must not queue.** Like MP's pending-update skip, keep only the
   latest SLOW snapshot per vehicle per client, and drop older ones if the socket is slow. The
   frontend gate (`gate.ts`) protects the UI, but it cannot stop a backlog building in the socket.

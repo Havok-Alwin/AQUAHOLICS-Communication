@@ -1,9 +1,12 @@
 <script lang="ts">
+  import Hud from './components/Hud.svelte';
   import Panel from './components/Panel.svelte';
   import Placeholder from './components/Placeholder.svelte';
   import TopBar from './components/TopBar.svelte';
-  import { VEHICLES } from './lib/config';
+  import { VEHICLES, type VehicleId } from './lib/config';
   import { ocs, vehicles } from './lib/sources';
+
+  let hudVehicle: VehicleId = $state(VEHICLES[0]);
 </script>
 
 <div class="app">
@@ -18,8 +21,15 @@
     </div>
 
     <div class="hud">
-      <Panel title="HUD">
-        <Placeholder text="Attitude HUD, canvas + rAF (logic 0, 5)" />
+      <Panel title="HUD" source={vehicles[hudVehicle]}>
+        <div class="hud-body">
+          <div class="tabs">
+            {#each VEHICLES as id (id)}
+              <button class:active={id === hudVehicle} onclick={() => (hudVehicle = id)}>{id}</button>
+            {/each}
+          </div>
+          <Hud vehicle={hudVehicle} />
+        </div>
       </Panel>
     </div>
 
@@ -70,6 +80,34 @@
   }
   .hud {
     grid-area: hud;
+  }
+  .hud-body {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .hud-body > :global(.hud) {
+    flex: 1;
+    min-height: 0;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.3rem;
+  }
+  .tabs button {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15rem 0.7rem;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .tabs button.active {
+    color: var(--text);
+    border-color: var(--connecting);
   }
   .map {
     grid-area: map;

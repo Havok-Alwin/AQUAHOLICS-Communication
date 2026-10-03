@@ -18,13 +18,14 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
-- `frontend/`: phase 1 (shell) built. Svelte 5 + TS + Vite. It has the layout, a source/staleness model
-  and the mock-mode banner. No transport and no logic items yet.
+- `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
+  logic 0 are done. There is no link B/C transport yet. In mock mode, `src/lib/mock.ts` feeds link B
+  messages, and that file is excluded from production builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review the frontend shell. Then the logic items one at a time. The .NET 10 check (a small console app
+Review logic 0. Then the remaining logic items one at a time, starting with 1 (binding map, read from IL). The .NET 10 check (a small console app
 that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
 roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
 
@@ -70,7 +71,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 
 | # | Logic | Source in MP | What it does | Status |
 |---|---|---|---|---|
-| 0 | Rendering pipeline (our own, tested in `~/Test_frontend`) | not MP | Per-stream rates instead of `ALL @ 4 Hz`; fast channel (roll/pitch/yaw, pushed on change, ~20 Hz) vs slow channel (status, 2 Hz); draw on a fixed frame clock (`requestAnimationFrame`), extrapolate with velocity from the last two samples, light 15 ms ease. Simulation at 20 Hz: RMS error 1.4 deg -> 0.7 deg, biggest frame jump 4.7 -> 1.8 deg. At 4 Hz no smoothing helps, so the data rate is the real fix | todo |
+| 0 | Rendering pipeline (our own, tested in `~/Test_frontend`) | not MP | Per-stream rates instead of `ALL @ 4 Hz`; fast channel (roll/pitch/yaw, pushed on change, ~20 Hz) vs slow channel (status, 2 Hz); draw on a fixed frame clock (`requestAnimationFrame`), extrapolate with velocity from the last two samples, light 15 ms ease. Simulation at 20 Hz: RMS error 1.4 deg -> 0.7 deg, biggest frame jump 4.7 -> 1.8 deg. At 4 Hz no smoothing helps, so the data rate is the real fix. Frontend: `frameClock.ts`, `attitude.ts`, `telemetry.ts` (FAST/SLOW message types), `Hud.svelte`. Liveness comes from SLOW, because FAST is sent on change only. Backend side (per-stream rates) is logic 3 | done |
 | 1 | Binding map | `FlightData.InitializeComponent` (72 `Binding`s) | HUD field <- `CurrentState` field, e.g. heading<-yaw, status<-armed, message<-messageHigh, gpsfix<-gpsstatus, batterylevel<-battery_voltage, navroll<-nav_roll, targetheading<-nav_bearing, disttowp<-wp_dist, groundalt<-HomeAlt, plus ekfstatus, prearmstatus, failsafe, linkqualitygcs, vibex/y/z | todo |
 | 2 | Update gate | `CurrentState.UpdateCurrentSettings` | Pushes to UI at most every 50 ms (20 Hz) | todo |
 | 3 | Stream-rate setup | `MAVLinkInterface.requestDatastream`; `cs.rateattitude/rateposition/ratestatus/ratesensors/raterc` (defaults 4/2/2/2) | Requests each MAVLink message group at its own rate | todo |

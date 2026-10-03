@@ -18,8 +18,27 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 - `backend/`: MP DLLs plus `Bridge.cs`. **`Bridge.cs` is a throwaway test, not the base.** The real
   backend server is designed after the tech stack is chosen.
-- `frontend/`: empty. Nothing is built until the tech stack is finalized.
-- Tech stack: partly decided. See the "Tech stack" section below.
+- `frontend/`: phase 1 (shell) built. Svelte 5 + TS + Vite. It has the layout, a source/staleness model
+  and the mock-mode banner. No transport and no logic items yet.
+- Tech stack: frontend decided. See the "Tech stack" section below.
+
+## Next step
+
+Review the frontend shell. Then the logic items one at a time. The .NET 10 check (a small console app
+that loads `backend/MissionPlanner.ArduPilot.dll`, connects to the Pixhawk on USB and prints
+roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
+
+## Reference material (outside this folder)
+
+- `~/MissionPlanner-latest/`: the full Mission Planner build (binaries only, no C# source). Read its
+  logic from the IL: `ikdasm ~/MissionPlanner-latest/MissionPlanner.exe > mp.il` (FlightData,
+  MainV2), `MissionPlanner.Controls.dll` (HUD), `MissionPlanner.ArduPilot.dll` (CurrentState,
+  MAVLinkInterface). Upstream source: github.com/ArduPilot/MissionPlanner.
+- `~/Test_frontend/`: prototype of logic 0 (per-stream rates, fast/slow channel, rAF frame clock,
+  extrapolation) in `backend/Bridge.cs` and `frontend/app.js`. Reference only; not the base.
+- `../RobotX Resources.pdf`: OCS <-> RoboCommand protocol (topics, envelopes, heartbeat, checklist).
+- `../../RobotX Resources_2.pdf`: the four mission tasks.
+- `../README.md` and `../main.py`: the OCS, already validated. Change it only additively.
 
 ## Workflow rules
 
@@ -106,11 +125,25 @@ Facts found while reading the IL:
 - **Autonomy:** UAV gets a companion computer running OpenCV (needed for Task 3). USV has no
   companion computer.
 
+- **Frontend (decided 2026-10-04):**
+  - **Svelte 5 + TypeScript + Vite**. The build output is static files with no CDN. The HUD is drawn on a
+    plain canvas with a `requestAnimationFrame` loop, outside Svelte's reactivity.
+  - **Map:** Leaflet with a **local** base layer: our own georeferenced image of the course, or
+    self-generated tiles. Do not bulk-download from OSM's tile servers (that breaks their policy). The
+    map must still work with no base layer, because the overlays (vehicles, keep-out areas, moving
+    object, 10 m ring) are what matter.
+  - **Packaging:** an ordinary web page served as static files by the .NET backend (Kestrel).
+    Development happens in any browser. For runs, a launch script opens it in kiosk mode (Chromium
+    `--app/--kiosk` or `firefox --kiosk`) so the operator can't close it or push it into a
+    background tab, where `requestAnimationFrame` gets throttled. `main.py`'s SSE (link C) will need a
+    CORS header, which is an additive change.
+  - **Mock mode:** dev only (`npm run dev:mock`, Vite `--mode mock`). It shows a large MOCK DATA
+    banner. A production build (`npm run build`) is always real mode, so mock can never run in a
+    real deployment.
+- **.NET 10 check:** deferred. It is test-bench work and runs later. The frontend shell is built first.
+
 ### Open
 
-- Frontend framework: Svelte + TypeScript (proposed) or plain JS.
-- Map: Leaflet with pre-downloaded offline tiles (proposed).
-- Packaging: Chromium kiosk (proposed).
 - Who sets `current_task` and task reports for the USV (no companion computer): OCS operator input?
 - How UAV OpenCV results reach the OCS: over the same telemetry radio as MAVLink, or a separate link.
 - Telemetry radio air data rate (sets the stream-rate budget).

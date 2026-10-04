@@ -15,6 +15,26 @@ public static class LinkBServer
     public const string DefaultUrl = "http://127.0.0.1:5080";
     public const string Path = "/linkb";
 
+    /// <summary>The Vite dev server (npm run dev) proxies /linkb from these pages.</summary>
+    public static readonly string[] DevOrigins = { "http://127.0.0.1:5173", "http://localhost:5173" };
+
+    /// <summary>
+    /// Logic 9: link B carries commands, so a browser may connect only from the operator display:
+    /// the page this server serves, or the Vite dev server. Without this, any web page open in the
+    /// kiosk browser could arm a vehicle (WebSockets are not limited by the same-origin policy).
+    /// A request with no Origin header is not from a browser page (e.g. a local test client).
+    /// </summary>
+    public static bool OriginAllowed(string? origin, HttpRequest request)
+    {
+        if (string.IsNullOrEmpty(origin))
+            return true;
+        if (DevOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase))
+            return true;
+        return Uri.TryCreate(origin, UriKind.Absolute, out var o)
+               && string.Equals(o.Scheme, request.Scheme, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(o.Authority, request.Host.Value, StringComparison.OrdinalIgnoreCase);
+    }
+
     public static WebApplication Build(LinkBHub hub, string url, string? webRoot, CancellationToken stop,
                                        LinkAHub? linkA = null)
     {
@@ -29,6 +49,13 @@ public static class LinkBServer
             if (!ctx.WebSockets.IsWebSocketRequest)
             {
                 ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+            var origin = ctx.Request.Headers.Origin.ToString();
+            if (!OriginAllowed(origin, ctx.Request))
+            {
+                Console.Error.WriteLine($"link B: refused a WebSocket from origin {origin}");
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
                 return;
             }
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();

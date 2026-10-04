@@ -60,14 +60,17 @@ internal sealed class Mailbox
             _signal.Release();
     }
 
+    /// <summary>Largest message accepted from a client; a larger one closes the connection.</summary>
+    public const int MaxIncoming = 4096;
+
     /// <summary>
     /// Sends this mailbox on `ws` until the client closes, falls behind on the log, or `stop` fires.
-    /// Incoming messages are read and ignored for now (commands, logic 9, will arrive here).
+    /// Each text message the client sends goes to `onMessage` (null: read and ignored).
     /// </summary>
-    public async Task PumpAsync(WebSocket ws, CancellationToken stop)
+    public async Task PumpAsync(WebSocket ws, CancellationToken stop, Action<string>? onMessage = null)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(stop);
-        var receive = ReceiveUntilClosed(ws, cts.Token);
+        var receive = ReceiveUntilClosed(ws, onMessage, cts.Token);
         _ = receive.ContinueWith(_ => cts.Cancel(), TaskScheduler.Default);  // closed: stop waiting
         try
         {
@@ -98,16 +101,28 @@ internal sealed class Mailbox
         }
     }
 
-    private static async Task ReceiveUntilClosed(WebSocket ws, CancellationToken stop)
+    private static async Task ReceiveUntilClosed(WebSocket ws, Action<string>? onMessage, CancellationToken stop)
     {
-        var buffer = new byte[4096];
+        var buffer = new byte[MaxIncoming];
+        var length = 0;
         try
         {
             while (ws.State == WebSocketState.Open)
             {
-                var result = await ws.ReceiveAsync(buffer, stop);
+                var result = await ws.ReceiveAsync(buffer.AsMemory(length), stop);
                 if (result.MessageType == WebSocketMessageType.Close)
                     return;
+                length += result.Count;
+                if (!result.EndOfMessage)
+                {
+                    if (length < buffer.Length)
+                        continue;
+                    await ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too big", CancellationToken.None);
+                    return;
+                }
+                if (result.MessageType == WebSocketMessageType.Text)
+                    onMessage?.Invoke(System.Text.Encoding.UTF8.GetString(buffer, 0, length));
+                length = 0;
             }
         }
         catch (OperationCanceledException) { }

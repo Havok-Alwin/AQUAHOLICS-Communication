@@ -5,6 +5,10 @@
 //   params     {ch:'params', vehicle, params:{BATT_*...}}       logic 6
 //   statustext {ch:'statustext', vehicle, t, severity, text}   logic 7
 //   backend    {ch:'backend', t, links:{USV1:{state, error}}}  1 Hz and on every link change
+//   modes      {ch:'modes', vehicle, modes:[...]}               logic 9: on connect (MP's names)
+//   cmdack     {ch:'cmdack', vehicle, id, cmd, status, detail, t} logic 9: every command update
+// Frontend -> backend (logic 9):
+//   cmd        {ch:'cmd', id, vehicle, cmd:'arm'|'disarm'|'mode', mode?}
 using System.Reflection;
 using System.Text.Json;
 using MissionPlanner;
@@ -83,6 +87,27 @@ public static class LinkBMessages
         w.WriteNumber("t", st.T);
         w.WriteNumber("severity", st.Severity);
         w.WriteString("text", st.Text);
+    });
+
+    public static byte[] Modes(string vehicle, IReadOnlyList<string> modes) => Write(w =>
+    {
+        w.WriteString("ch", "modes");
+        w.WriteString("vehicle", vehicle);
+        w.WriteStartArray("modes");
+        foreach (var m in modes)
+            w.WriteStringValue(m);
+        w.WriteEndArray();
+    });
+
+    public static byte[] CmdAck(string vehicle, CommandUpdate u, long t) => Write(w =>
+    {
+        w.WriteString("ch", "cmdack");
+        w.WriteString("vehicle", vehicle);
+        w.WriteString("id", u.Id);
+        w.WriteString("cmd", u.Kind);
+        w.WriteString("status", u.Status);
+        w.WriteString("detail", u.Detail);
+        w.WriteNumber("t", t);
     });
 
     public static byte[] Backend(long t, IEnumerable<VehicleLink> links) => Write(w =>

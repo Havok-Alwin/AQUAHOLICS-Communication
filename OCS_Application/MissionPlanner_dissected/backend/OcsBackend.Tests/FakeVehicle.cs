@@ -1,6 +1,7 @@
 // A scripted ArduPilot vehicle behind a FakeSerial: heartbeats and ATTITUDE while the port is open
 // and Sending is on, plus optional RADIO_STATUS from the telemetry radio itself. Answers
-// PARAM_REQUEST_READ from Params, and can send STATUSTEXT and parameter changes.
+// PARAM_REQUEST_READ from Params, answers COMMAND_LONG as CommandReply says (arm/disarm and
+// DO_SET_MODE change Armed / CustomMode), and can send STATUSTEXT and parameter changes.
 namespace Ocs.Backend.Tests;
 
 public sealed class FakeVehicle : IDisposable
@@ -43,6 +44,22 @@ public sealed class FakeVehicle : IDisposable
     /// <summary>PARAM_REQUEST_READ names received, in order.</summary>
     public List<string> ParamRequests { get; } = new();
 
+    public enum Reply { Accept, Deny, Ignore, InProgressThenAccept }
+
+    /// <summary>How the vehicle answers COMMAND_LONG (default Accept).</summary>
+    public volatile Reply CommandReply = Reply.Accept;
+
+    /// <summary>Delay before the final ACCEPTED of InProgressThenAccept.</summary>
+    public int InProgressMs = 600;
+
+    /// <summary>COMMAND_LONG received, in order.</summary>
+    public List<MAVLink.mavlink_command_long_t> Commands { get; } = new();
+
+    public volatile bool Armed;
+
+    /// <summary>Rover custom mode in the heartbeat (0 Manual, 4 Hold, 10 Auto).</summary>
+    public volatile uint CustomMode;
+
     public FakeVehicle(byte sysid = 1, int periodMs = 50)
     {
         _sysid = sysid;
@@ -72,6 +89,11 @@ public sealed class FakeVehicle : IDisposable
         MAVLink.MAVLinkMessage? msg;
         try { msg = new MAVLink.MavlinkParse().ReadPacket(new MemoryStream(bytes)); }
         catch { return; }
+        if (msg != null && msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.COMMAND_LONG)
+        {
+            OnCommand(msg.ToStructure<MAVLink.mavlink_command_long_t>());
+            return;
+        }
         if (msg == null || msg.msgid != (uint)MAVLink.MAVLINK_MSG_ID.PARAM_REQUEST_READ)
             return;
         var req = msg.ToStructure<MAVLink.mavlink_param_request_read_t>();
@@ -84,6 +106,38 @@ public sealed class FakeVehicle : IDisposable
                 return;
         }
         SendParam(name, value);
+    }
+
+    private void OnCommand(MAVLink.mavlink_command_long_t cmd)
+    {
+        lock (Commands)
+            Commands.Add(cmd);
+        void Ack(MAVLink.MAV_RESULT r) =>
+            Send(MAVLink.MAVLINK_MSG_ID.COMMAND_ACK, new MAVLink.mavlink_command_ack_t
+            {
+                command = cmd.command, result = (byte)r, target_system = 255, target_component = 190,
+            });
+        void Apply()
+        {
+            if (cmd.command == (ushort)MAVLink.MAV_CMD.COMPONENT_ARM_DISARM)
+                Armed = cmd.param1 == 1;
+            else if (cmd.command == (ushort)MAVLink.MAV_CMD.DO_SET_MODE)
+                CustomMode = (uint)cmd.param2;
+        }
+        switch (CommandReply)
+        {
+            case Reply.Accept:
+                Apply();
+                Ack(MAVLink.MAV_RESULT.ACCEPTED);
+                break;
+            case Reply.Deny:
+                Ack(MAVLink.MAV_RESULT.DENIED);
+                break;
+            case Reply.InProgressThenAccept:
+                Ack(MAVLink.MAV_RESULT.IN_PROGRESS);
+                Task.Delay(InProgressMs).ContinueWith(_ => { Apply(); Ack(MAVLink.MAV_RESULT.ACCEPTED); });
+                break;
+        }
     }
 
     private void SendParam(string name, float value)
@@ -120,6 +174,8 @@ public sealed class FakeVehicle : IDisposable
                 {
                     type = (byte)MAVLink.MAV_TYPE.SURFACE_BOAT,
                     autopilot = (byte)MAVLink.MAV_AUTOPILOT.ARDUPILOTMEGA,
+                    base_mode = (byte)(MAVLink.MAV_MODE_FLAG.CUSTOM_MODE_ENABLED | (Armed ? MAVLink.MAV_MODE_FLAG.SAFETY_ARMED : 0)),
+                    custom_mode = CustomMode,
                     mavlink_version = 3,
                 });
             }

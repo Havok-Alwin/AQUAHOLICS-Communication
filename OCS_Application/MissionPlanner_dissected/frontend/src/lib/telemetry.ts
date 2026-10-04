@@ -66,7 +66,30 @@ export interface BackendMsg {
   links: Partial<Record<string, VehicleLinkInfo>>;
 }
 
-export type LinkBMsg = FastMsg | SlowMsg | ParamsMsg | StatusTextMsg | BackendMsg;
+/** Logic 9: the vehicle's flight modes, MP's names for its firmware (the names cs.mode uses). */
+export interface ModesMsg {
+  ch: 'modes';
+  vehicle: VehicleId;
+  modes: string[];
+}
+
+export type CommandKind = 'arm' | 'disarm' | 'mode';
+/** 'sending' is local (not yet confirmed by the backend); the rest come from the backend. */
+export type CommandStatus = 'sending' | 'sent' | 'accepted' | 'rejected' | 'timeout' | 'error';
+
+/** Logic 9: progress of a command (VehicleCommands.cs): sent, then one final status. */
+export interface CmdAckMsg {
+  ch: 'cmdack';
+  vehicle: VehicleId;
+  id: string;
+  cmd: CommandKind;
+  status: Exclude<CommandStatus, 'sending'>;
+  detail: string;
+  /** Sender clock, ms. */
+  t: number;
+}
+
+export type LinkBMsg = FastMsg | SlowMsg | ParamsMsg | StatusTextMsg | BackendMsg | ModesMsg | CmdAckMsg;
 
 export const attitude: Record<VehicleId, AttitudeTrack> = Object.fromEntries(
   VEHICLES.map((id) => [id, new AttitudeTrack()]),
@@ -127,10 +150,53 @@ const linkStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<Vehicle
  */
 export const vehicleLink: Record<VehicleId, Readable<VehicleLinkInfo | undefined>> = linkStores;
 
+const modeStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<readonly string[]>([])])) as Record<
+  VehicleId,
+  Writable<readonly string[]>
+>;
+
+/** Flight modes the operator can choose for each vehicle; empty while it is not connected. */
+export const vehicleModes: Record<VehicleId, Readable<readonly string[]>> = modeStores;
+
+export interface CommandState {
+  id: string;
+  cmd: CommandKind;
+  /** Mode name for cmd 'mode'. */
+  mode?: string;
+  status: CommandStatus;
+  detail: string;
+  /** Local time of the last change, ms. */
+  at: number;
+}
+
+const commandStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<CommandState | undefined>(undefined)])) as Record<
+  VehicleId,
+  Writable<CommandState | undefined>
+>;
+
+/** The latest command per vehicle and how far it got (logic 9). */
+export const vehicleCommand: Record<VehicleId, Readable<CommandState | undefined>> = commandStores;
+
+/** A command just went out on link B (linkB.ts). */
+export function commandSending(vehicle: VehicleId, state: CommandState): void {
+  commandStores[vehicle].set(state);
+}
+
+/** A pending command can no longer be answered (link B closed). */
+export function commandsLost(): void {
+  for (const id of VEHICLES)
+    commandStores[id].update((c) =>
+      c && (c.status === 'sending' || c.status === 'sent')
+        ? { ...c, status: 'error', detail: 'connection to the vehicle backend lost: outcome unknown', at: Date.now() }
+        : c,
+    );
+}
+
 /** The backend went away: no vehicle link state is known any more. */
 export function clearVehicleLinks(): void {
   for (const id of VEHICLES) {
     linkStores[id].set(undefined);
+    modeStores[id].set([]);
     vehicles[id].setConnected(false);
   }
 }
@@ -150,6 +216,22 @@ export function handleLinkB(msg: LinkBMsg): void {
     return;
   }
   if (!(msg.vehicle in vehicles)) return;
+  if (msg.ch === 'modes') {
+    modeStores[msg.vehicle].set(msg.modes);
+    return;
+  }
+  if (msg.ch === 'cmdack') {
+    // Every display gets every command's progress; a page shows the latest per vehicle.
+    commandStores[msg.vehicle].update((c) => ({
+      id: msg.id,
+      cmd: msg.cmd,
+      mode: c?.id === msg.id ? c.mode : undefined,
+      status: msg.status,
+      detail: msg.detail,
+      at: Date.now(),
+    }));
+    return;
+  }
   if (msg.ch === 'att') {
     attitude[msg.vehicle].push({ t: msg.t, roll: msg.r, pitch: msg.p, yaw: msg.y });
   } else if (msg.ch === 'params') {

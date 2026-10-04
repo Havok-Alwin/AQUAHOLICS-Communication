@@ -27,6 +27,9 @@
 //   show one vehicle's data under the other's name.
 // Phase 2: on connect, the battery parameters (BatteryParams, logic 6) and, from then on, every
 // STATUSTEXT (logic 7), both raised as events for link B.
+// Logic 9: operator commands (VehicleCommands.cs) are queued by Submit and run on the link thread,
+// so the port keeps a single reader and the GCS heartbeat never pauses.
+using System.Collections.Concurrent;
 using MissionPlanner;
 using MissionPlanner.Comms;
 
@@ -57,6 +60,9 @@ public sealed record VehicleLinkConfig(string Name, string Port, int Baud = 5760
     public TimeSpan LostAfter { get; init; } = TimeSpan.FromSeconds(1);
     /// <summary>GCS heartbeat to the vehicle (MP: once a second).</summary>
     public TimeSpan HeartbeatPeriod { get; init; } = TimeSpan.FromSeconds(1);
+    /// <summary>Wait for a COMMAND_ACK before a retry (MP doCommand: 2 s; arm/disarm 10 s).</summary>
+    public TimeSpan CommandTimeout { get; init; } = TimeSpan.FromSeconds(2);
+    public TimeSpan ArmTimeout { get; init; } = TimeSpan.FromSeconds(10);
 }
 
 public sealed class VehicleLink : IDisposable
@@ -73,6 +79,8 @@ public sealed class VehicleLink : IDisposable
     private MAVLinkInterface? _mav;
     private StreamRates? _rates;
     private BatteryParams? _params;
+    private VehicleCommands? _commands;
+    private readonly ConcurrentQueue<VehicleCommand> _commandQueue = new();
     private DateTime _retryAt = DateTime.MinValue;
     private DateTime _lastHeartbeatSent = DateTime.MinValue;
     private LinkState _state = LinkState.Closed;
@@ -104,6 +112,30 @@ public sealed class VehicleLink : IDisposable
     /// <summary>Every packet from the vehicle, raised inside readPacket on the link thread (link B
     /// takes ATTITUDE from here). Handlers must be quick and must not throw.</summary>
     public event Action<VehicleLink, MAVLink.MAVLinkMessage>? PacketReceived;
+
+    /// <summary>Progress of every command (logic 9): "sent", then accepted/rejected/timeout/error.
+    /// Raised on the link thread, or on the caller's thread for an immediate refusal.</summary>
+    public event Action<VehicleLink, CommandUpdate>? CommandUpdated;
+
+    /// <summary>The connected vehicle's flight modes (MP's names for its firmware), on connect.</summary>
+    public event Action<VehicleLink, IReadOnlyList<string>>? ModesChanged;
+
+    /// <summary>The flight modes of the connected vehicle; empty while not connected.</summary>
+    public IReadOnlyList<string> Modes { get; private set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Queues a command for the link thread. Refused at once if the kind is unknown or the link is
+    /// not LIVE. Thread-safe.
+    /// </summary>
+    public void Submit(VehicleCommand cmd)
+    {
+        if (Array.IndexOf(VehicleCommands.Kinds, cmd.Kind) < 0)
+            CommandUpdated?.Invoke(this, new CommandUpdate(cmd.Id, cmd.Kind, "error", $"unknown command '{cmd.Kind}'"));
+        else if (State != LinkState.Live)
+            CommandUpdated?.Invoke(this, new CommandUpdate(cmd.Id, cmd.Kind, "error", $"vehicle link is {State.ToString().ToUpperInvariant()}, not LIVE"));
+        else
+            _commandQueue.Enqueue(cmd);
+    }
 
     /// <summary>The five battery parameters (logic 6), on connect and on every change.</summary>
     public event Action<VehicleLink, IReadOnlyDictionary<string, float>>? ParamsChanged;
@@ -161,6 +193,14 @@ public sealed class VehicleLink : IDisposable
 
         _rates!.Tick();
         _params!.Tick();
+        while (_commandQueue.TryDequeue(out var cmd))
+        {
+            if (State == LinkState.Live)
+                _commands!.Start(cmd);
+            else
+                CommandUpdated?.Invoke(this, new CommandUpdate(cmd.Id, cmd.Kind, "error", $"vehicle link is {State.ToString().ToUpperInvariant()}, not LIVE"));
+        }
+        _commands!.Tick();
         SendGcsHeartbeat(mav);
 
         var silent = DateTime.UtcNow - mav.MAV.lastvalidpacket;
@@ -211,24 +251,30 @@ public sealed class VehicleLink : IDisposable
                           + $"type {mav.MAV.aptype}, autopilot {mav.MAV.apname}");
         var batt = new BatteryParams(mav, sysid, mav.MAV.compid);
         batt.Changed += p => ParamsChanged?.Invoke(this, p);
-        mav.OnPacketReceived += (_, msg) => OnPacket(msg, sysid, mav.MAV.compid, batt);
+        var commands = new VehicleCommands(mav, sysid, mav.MAV.compid, u => CommandUpdated?.Invoke(this, u),
+                                           _config.CommandTimeout, _config.ArmTimeout);
+        mav.OnPacketReceived += (_, msg) => OnPacket(msg, sysid, mav.MAV.compid, batt, commands);
         lock (_lock)
         {
             _mav = mav;
             _rates = new StreamRates(mav);
             _params = batt;
+            _commands = commands;
         }
+        Modes = VehicleCommands.ModesOf(mav);
+        ModesChanged?.Invoke(this, Modes);
         _lastHeartbeatSent = DateTime.MinValue;
         Error = null;
         SetState(LinkState.Live);
     }
 
     // Runs inside mav.readPacket(), on the link thread.
-    private void OnPacket(MAVLink.MAVLinkMessage msg, byte sysid, byte compid, BatteryParams batt)
+    private void OnPacket(MAVLink.MAVLinkMessage msg, byte sysid, byte compid, BatteryParams batt, VehicleCommands commands)
     {
         try
         {
             batt.OnPacket(msg);
+            commands.OnPacket(msg);
             PacketReceived?.Invoke(this, msg);
             // Autopilot only, like MP (its cs.messages are per sysid/compid). One packet, one entry:
             // ArduPilot's texts fit in one packet, so MAVLink 2 chunking (id/chunk_seq) is not joined.
@@ -273,12 +319,23 @@ public sealed class VehicleLink : IDisposable
     private void Disconnect()
     {
         MAVLinkInterface? old;
+        VehicleCommands? commands;
         lock (_lock)
         {
             old = _mav;
+            commands = _commands;
             _mav = null;
             _rates = null;
             _params = null;
+            _commands = null;
+        }
+        commands?.Abort("vehicle link closed");
+        while (_commandQueue.TryDequeue(out var cmd))
+            CommandUpdated?.Invoke(this, new CommandUpdate(cmd.Id, cmd.Kind, "error", "vehicle link closed"));
+        if (old != null)
+        {
+            Modes = Array.Empty<string>();
+            ModesChanged?.Invoke(this, Modes);
         }
         try { old?.Dispose(); } catch { /* closing a dead port */ }
         SetState(LinkState.Closed);

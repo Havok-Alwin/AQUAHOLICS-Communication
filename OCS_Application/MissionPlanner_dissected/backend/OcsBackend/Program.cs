@@ -134,6 +134,8 @@ public static class Program
             link.ParamsChanged += (l, p) =>
                 Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {l.Name}: params "
                                   + string.Join(", ", p.Select(kv => $"{kv.Key}={kv.Value}")));
+            link.CommandUpdated += (l, u) =>
+                Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {l.Name}: command {u.Kind} (id {u.Id}) {u.Status.ToUpperInvariant()}: {u.Detail}");
             link.StatusTextReceived += (l, st) =>
                 Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {l.Name}: [{(MAVLink.MAV_SEVERITY)st.Severity}] {st.Text}");
             var t = new Thread(() => link.Run(stop.Token)) { Name = link.Name, IsBackground = true };

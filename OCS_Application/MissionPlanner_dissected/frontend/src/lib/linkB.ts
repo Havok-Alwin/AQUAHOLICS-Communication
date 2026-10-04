@@ -3,12 +3,29 @@
 //
 // The page is served by the backend itself, so /linkb is same-origin. On the Vite dev server the
 // same path is proxied to the backend (vite.config.ts), so this URL never changes.
-// Read-only for now: commands (logic 9) will be sent on this socket.
+// Logic 9: commands go to the backend on this socket (sendCommand); the backend accepts the socket
+// only from this page's origin or the Vite dev server (LinkBServer.OriginAllowed).
+import type { VehicleId } from './config';
 import { LINK_B_RECONNECT_MS } from './pacing';
 import { vehicleBackend } from './sources';
-import { clearVehicleLinks, handleLinkB, type LinkBMsg } from './telemetry';
+import { clearVehicleLinks, commandSending, commandsLost, handleLinkB, type CommandKind, type LinkBMsg } from './telemetry';
 
-const CHANNELS = new Set(['att', 'status', 'params', 'statustext', 'backend']);
+const CHANNELS = new Set(['att', 'status', 'params', 'statustext', 'backend', 'modes', 'cmdack']);
+
+let socket: WebSocket | undefined;
+let commandCounter = 0;
+
+/**
+ * Sends a command to a vehicle through the backend (logic 9). The caller has already asked the
+ * operator to confirm. Returns false if link B is not open (nothing was sent).
+ */
+export function sendCommand(vehicle: VehicleId, cmd: CommandKind, mode?: string): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  const id = `${Date.now().toString(36)}-${++commandCounter}`;
+  commandSending(vehicle, { id, cmd, mode, status: 'sending', detail: '', at: Date.now() });
+  socket.send(JSON.stringify({ ch: 'cmd', id, vehicle, cmd, ...(mode !== undefined ? { mode } : {}) }));
+  return true;
+}
 
 function linkBUrl(): string {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -24,6 +41,7 @@ export function startLinkB(): () => void {
 
   const connect = () => {
     ws = new WebSocket(linkBUrl());
+    socket = ws;
     ws.onopen = () => {
       delay = LINK_B_RECONNECT_MS.min;
       vehicleBackend.setConnected(true);
@@ -46,6 +64,7 @@ export function startLinkB(): () => void {
       // Every source fed by link B goes OFFLINE with the age of its last update.
       vehicleBackend.setConnected(false);
       clearVehicleLinks();
+      commandsLost();
       if (stopped) return;
       retry = setTimeout(connect, delay);
       delay = Math.min(delay * 2, LINK_B_RECONNECT_MS.max);

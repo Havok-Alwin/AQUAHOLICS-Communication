@@ -4,6 +4,7 @@
   import { VEHICLE_TYPE, type VehicleId } from '../lib/config';
   import { formatAge } from '../lib/source';
   import { MOCK } from '../lib/mode';
+  import VehicleCommands from './VehicleCommands.svelte';
   import { vehicleBackend, vehicles } from '../lib/sources';
   import { severityLevel, severityName } from '../lib/severity';
   import { displayUnits, toDisplay, type UnitKind } from '../lib/units';
@@ -150,6 +151,9 @@
     {:else}
       <div class="message none">No vehicle message</div>
     {/if}
+
+    <!-- Logic 9: arm / disarm / mode, each confirmed -->
+    <VehicleCommands {vehicle} />
 
     <!-- 4. Everything else from the binding map, out of the way -->
     <details>

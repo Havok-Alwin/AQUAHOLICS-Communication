@@ -11,6 +11,7 @@
 //   (last HistoryPerVehicle per vehicle, like MP's cs.messages), so a reloaded page is complete.
 // - ATTITUDE is forwarded as it arrives (on change). Degrees, yaw 0..360, as CurrentState does it.
 using System.Net.WebSockets;
+using System.Text.Json;
 
 namespace Ocs.Backend;
 
@@ -26,6 +27,7 @@ public sealed class LinkBHub : IDisposable
     private readonly Dictionary<string, Queue<byte[]>> _history = new();
     private readonly Dictionary<string, (float r, float p, float y)> _lastAtt = new();
     private readonly Dictionary<string, byte[]> _lastAttMsg = new();
+    private readonly Dictionary<string, byte[]> _modes = new();
     private readonly Timer _slowTimer, _backendTimer;
 
     public LinkBHub(IReadOnlyList<VehicleLink> links, TimeSpan? slowPeriod = null, TimeSpan? backendPeriod = null)
@@ -38,6 +40,8 @@ public sealed class LinkBHub : IDisposable
             link.ParamsChanged += OnParams;
             link.StatusTextReceived += OnStatusText;
             link.StateChanged += (_, _) => PostBackend();
+            link.ModesChanged += OnModes;
+            link.CommandUpdated += OnCommandUpdate;
         }
         var slow = slowPeriod ?? TimeSpan.FromMilliseconds(500);  // LINK_B.slowHz = 2
         var backend = backendPeriod ?? TimeSpan.FromSeconds(1);
@@ -94,6 +98,58 @@ public sealed class LinkBHub : IDisposable
         }
     }
 
+    private void OnModes(VehicleLink link, IReadOnlyList<string> modes)
+    {
+        var msg = LinkBMessages.Modes(link.Name, modes);
+        lock (_lock)
+            _modes[link.Name] = msg;
+        PostLatest($"modes:{link.Name}", msg);
+    }
+
+    // Logic 9: every command update reaches every operator display, in order (a log, never coalesced).
+    private void OnCommandUpdate(VehicleLink link, CommandUpdate u)
+    {
+        var msg = LinkBMessages.CmdAck(link.Name, u, LinkBMessages.Now());
+        lock (_lock)
+            foreach (var client in _clients)
+                client.PostLog(msg);
+    }
+
+    /// <summary>
+    /// A message from a frontend. Only `cmd` exists: {ch:'cmd', id, vehicle, cmd, mode?}. A malformed
+    /// one is answered with a cmdack error when it names a vehicle and an id, and ignored otherwise.
+    /// </summary>
+    internal void OnClientMessage(string text)
+    {
+        string? id = null, vehicle = null, kind = null, mode = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || Str(root, "ch") != "cmd")
+                return;
+            id = Str(root, "id");
+            vehicle = Str(root, "vehicle");
+            kind = Str(root, "cmd");
+            mode = Str(root, "mode");
+        }
+        catch (JsonException)
+        {
+            return;
+        }
+        var link = _links.FirstOrDefault(l => l.Name == vehicle);
+        if (link == null || string.IsNullOrEmpty(id) || id.Length > 64 || kind == null)
+        {
+            Console.Error.WriteLine($"link B: ignored a malformed command: {text[..Math.Min(text.Length, 200)]}");
+            return;
+        }
+        Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {link.Name}: command {kind}{(mode != null ? " " + mode : "")} (id {id}) from the operator display");
+        link.Submit(new VehicleCommand(id, kind, mode));
+    }
+
+    private static string? Str(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
     private void PostStatus()
     {
         foreach (var link in _links)
@@ -131,6 +187,8 @@ public sealed class LinkBHub : IDisposable
             // FAST is on change only: without this, a still vehicle would show no attitude.
             foreach (var (name, msg) in _lastAttMsg)
                 client.PostLatest($"att:{name}", msg);
+            foreach (var (name, msg) in _modes)
+                client.PostLatest($"modes:{name}", msg);
             foreach (var history in _history.Values)
                 foreach (var msg in history)
                     client.PostLog(msg);
@@ -139,7 +197,7 @@ public sealed class LinkBHub : IDisposable
 
         try
         {
-            await client.PumpAsync(ws, stop);
+            await client.PumpAsync(ws, stop, OnClientMessage);
         }
         finally
         {

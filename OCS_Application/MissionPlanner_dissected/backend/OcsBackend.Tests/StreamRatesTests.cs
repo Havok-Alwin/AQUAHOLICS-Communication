@@ -87,7 +87,7 @@ public class StreamRatesTests
     public void NothingWhilePortClosed()
     {
         var (mav, port) = Connected();
-        port.IsOpen = false;
+        port.Unplug();
         new StreamRates(mav).Tick();
         Assert.Empty(port.Packets());
     }

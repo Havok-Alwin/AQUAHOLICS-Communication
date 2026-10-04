@@ -36,7 +36,11 @@ export const LINK_B = {
   slowHz: 2, // status snapshot
 } as const;
 
-/** How long without an update before a source is STALE. Provisional: revisit with logic 8. */
+/**
+ * How long without an update before a source is STALE. Logic 8: the backend sends a vehicle's SLOW
+ * snapshot only while that vehicle's link is LIVE (a valid autopilot packet within 1 s), so a
+ * silent vehicle shows STALE here ~3 s after its last packet (MP's "No Data" warning time).
+ */
 export const STALE_AFTER_MS = {
   vehicleBackend: 2000, // 4 missed SLOW messages
   vehicle: 2000,

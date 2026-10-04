@@ -50,12 +50,23 @@ export interface StatusTextMsg {
 }
 
 /** Vehicle link state in the backend (logic 8, VehicleLink.cs). */
-export type VehicleLinkState = 'closed' | 'connecting' | 'live' | 'lost';
+export type VehicleLinkState = 'off' | 'closed' | 'connecting' | 'live' | 'lost';
 
 export interface VehicleLinkInfo {
+  /** 'off': no port chosen (connect it from the vehicle card). */
   state: VehicleLinkState;
   /** Why the last connect failed or the link dropped; null while connected. */
   error: string | null;
+  /** The port this vehicle is connected (or connecting) to; absent while 'off'. */
+  port?: string;
+  baud?: number;
+  sysid?: number;
+}
+
+/** A serial port the backend found (link B `backend.ports`). */
+export interface SerialPortInfo {
+  path: string;
+  label: string;
 }
 
 /** Backend status, 1 Hz and on every link change. Keeps the backend LIVE when no vehicle is. */
@@ -64,6 +75,8 @@ export interface BackendMsg {
   /** Sender clock, ms. */
   t: number;
   links: Partial<Record<string, VehicleLinkInfo>>;
+  /** Serial ports on the OCS laptop, refreshed every second. */
+  ports?: SerialPortInfo[];
 }
 
 /** Logic 9: the vehicle's flight modes, MP's names for its firmware (the names cs.mode uses). */
@@ -82,7 +95,7 @@ export interface CmdAckMsg {
   ch: 'cmdack';
   vehicle: VehicleId;
   id: string;
-  cmd: CommandKind;
+  cmd: CommandKind | 'connect' | 'disconnect';
   status: Exclude<CommandStatus, 'sending'>;
   detail: string;
   /** Sender clock, ms. */
@@ -192,6 +205,27 @@ export function commandsLost(): void {
     );
 }
 
+const portStore = writable<readonly SerialPortInfo[]>([]);
+
+/** Serial ports a vehicle can be connected to. */
+export const serialPorts: Readable<readonly SerialPortInfo[]> = portStore;
+
+export interface ConnectReply {
+  id: string;
+  cmd: 'connect' | 'disconnect';
+  status: 'accepted' | 'error';
+  detail: string;
+  at: number;
+}
+
+const connectReplyStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<ConnectReply | undefined>(undefined)])) as Record<
+  VehicleId,
+  Writable<ConnectReply | undefined>
+>;
+
+/** The backend's answer to the last Connect / Disconnect per vehicle (kept apart from vehicle commands). */
+export const vehicleConnectReply: Record<VehicleId, Readable<ConnectReply | undefined>> = connectReplyStores;
+
 /** The backend went away: no vehicle link state is known any more. */
 export function clearVehicleLinks(): void {
   for (const id of VEHICLES) {
@@ -205,6 +239,7 @@ export function handleLinkB(msg: LinkBMsg): void {
   // Any message proves the backend is up; the 1 Hz backend message covers the no-vehicle case.
   vehicleBackend.markUpdate();
   if (msg.ch === 'backend') {
+    if (msg.ports) portStore.set(msg.ports);
     for (const id of VEHICLES) {
       const info = msg.links[id];
       linkStores[id].set(info);
@@ -220,11 +255,21 @@ export function handleLinkB(msg: LinkBMsg): void {
     modeStores[msg.vehicle].set(msg.modes);
     return;
   }
+  if (msg.ch === 'cmdack' && (msg.cmd === 'connect' || msg.cmd === 'disconnect')) {
+    connectReplyStores[msg.vehicle].set({
+      id: msg.id,
+      cmd: msg.cmd,
+      status: msg.status === 'accepted' ? 'accepted' : 'error',
+      detail: msg.detail,
+      at: Date.now(),
+    });
+    return;
+  }
   if (msg.ch === 'cmdack') {
     // Every display gets every command's progress; a page shows the latest per vehicle.
     commandStores[msg.vehicle].update((c) => ({
       id: msg.id,
-      cmd: msg.cmd,
+      cmd: msg.cmd as CommandKind, // connect / disconnect returned above
       mode: c?.id === msg.id ? c.mode : undefined,
       status: msg.status,
       detail: msg.detail,

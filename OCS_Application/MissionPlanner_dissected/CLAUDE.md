@@ -37,12 +37,15 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 Review the Task 4 replies (logic 3 and 8 are committed; their rows still say "review"). All logic items except 4 are done, and every panel of the display is built. Remaining work:
 - A base layer for the map: a georeferenced image of the course or self-made tiles, as
   `frontend/public/map/base.json` + the image (see "Map").
-- Bench: `dotnet run -- --vehicle USV1=<port>@<baud>#<sysid>` against the real Pixhawk (USB, then
-  radio) is the .NET 10 hardware check.
+- Bench: `./start.sh`, then Connect on the vehicle card (USB passed; next: over the radio, commands
+  on the real board, UAV1).
 - Logic 4 is covered by logic 0 (rAF frame clock instead of invalidate-on-change). Close it on review.
 
-The .NET 10 check (a small console app that loads `backend/MissionPlanner.ArduPilot.dll`, connects
-to the Pixhawk on USB and prints roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
+The .NET 10 hardware check **passed 2026-10-04 over USB**: Pixhawk1 (`1209:5741`, ArduRover V4.7.0,
+sysid 1, reports MAV_TYPE GROUND_ROVER) on `/dev/serial/by-id/usb-ArduPilot_Pixhawk1_...-if00`
+connected in ~5 s, LIVE, MAVLink 2, ~67 packets/s with the logic 3 start rates, 0 loss, battery
+params fetched (BATT_CRT_VOLT and BATT_CRT_MAH are 0 on that board: only the low thresholds apply).
+Still to test: over the telemetry radio, arm/mode commands on the real board, and UAV1.
 
 ## Reference material (outside this folder)
 
@@ -179,6 +182,30 @@ headless Chrome, both served by the backend and through the Vite proxy. Checked:
 params, messages, LOST -> OFFLINE + "Link LOST", recovery, backend killed -> everything OFFLINE,
 backend restarted -> page reconnects by itself. Note: MP takes `battery_voltage` from
 BATTERY_STATUS (EXTRA3), not SYS_STATUS, so with EXTRA3 off the battery reads 0 V = CRITICAL.
+
+## Running it: start.sh and Connect (built)
+
+`./start.sh` (in this folder) builds the display if its sources changed, starts the vehicle backend
+(`dotnet run`, no arguments) and opens `http://127.0.0.1:5080/` once it answers (`--kiosk`: full-screen
+Chrome/Chromium for runs). Each vehicle card has a connect bar (`ConnectBar.svelte`), like Mission
+Planner's: serial port (the backend lists `/dev/serial/by-id/*`, named after the device, e.g.
+"ArduPilot Pixhawk1 (ttyACM0)", then other ttyACM/ttyUSB; COM ports on Windows), baud (USB ignores it;
+telemetry radios 57600), optional expected sysid, **Connect**; while connected **Reconnect** and
+**Disconnect** (confirmed while LIVE). Backend: one `VehicleLink` slot per vehicle (USV1, UAV1),
+new state `off` until connected; `VehicleLink.Configure(config|null)` from any thread, applied on the
+link thread; a connect in progress is cancelled through MP's public
+`frmProgressReporter.doWorkArgs.CancelRequested` (its `Open()` loop checks it every heartbeat wait),
+so Disconnect/Reconnect act within ~2 s instead of after the 30 s connect timeout. Link B messages
+`connect {id, vehicle, port, baud, sysid?}` / `disconnect {id, vehicle}` (Origin-checked like every
+link B message), answered with `cmdack` (cmd connect/disconnect); only a port the backend listed,
+a listed baud, sysid 1..255, one vehicle per port. The `backend` message now carries each slot's
+port/baud/sysid and the port list (refreshed every second). Connections are saved to
+`~/.config/aquaholics-ocs/vehicles.json` and restored at the next start (not when started with
+`--vehicle`, which still works). `--extra-port PATH` offers an unlisted port (simulators, testing);
+`--check` runs the old .NET 10 load check. The backend now refuses to start if CurrentState's unit
+multipliers are not 1 (logic 10 requirement). Tests: `ConnectTests.cs` (7). Checked in the browser
+against a fake boat: Connect -> LIVE, Reconnect -> LIVE again, Disconnect (dialog) -> OFF, restart ->
+restored and LIVE by itself.
 
 ## Map (built)
 

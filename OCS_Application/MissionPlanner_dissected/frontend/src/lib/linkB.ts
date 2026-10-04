@@ -15,16 +15,35 @@ const CHANNELS = new Set(['att', 'status', 'params', 'statustext', 'backend', 'm
 let socket: WebSocket | undefined;
 let commandCounter = 0;
 
+/** Connects a vehicle slot to a serial port (backend: LinkBHub.OnConnect; it remembers it). */
+export function connectVehicle(vehicle: VehicleId, port: string, baud: number, sysid?: number): boolean {
+  return sendRaw({ ch: 'connect', id: nextId(), vehicle, port, baud, ...(sysid !== undefined ? { sysid } : {}) });
+}
+
+/** Disconnects a vehicle slot (the port is released; the vehicle shows OFF). */
+export function disconnectVehicle(vehicle: VehicleId): boolean {
+  return sendRaw({ ch: 'disconnect', id: nextId(), vehicle });
+}
+
+function nextId(): string {
+  return `${Date.now().toString(36)}-${++commandCounter}`;
+}
+
+function sendRaw(msg: object): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(msg));
+  return true;
+}
+
 /**
  * Sends a command to a vehicle through the backend (logic 9). The caller has already asked the
  * operator to confirm. Returns false if link B is not open (nothing was sent).
  */
 export function sendCommand(vehicle: VehicleId, cmd: CommandKind, mode?: string): boolean {
   if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-  const id = `${Date.now().toString(36)}-${++commandCounter}`;
+  const id = nextId();
   commandSending(vehicle, { id, cmd, mode, status: 'sending', detail: '', at: Date.now() });
-  socket.send(JSON.stringify({ ch: 'cmd', id, vehicle, cmd, ...(mode !== undefined ? { mode } : {}) }));
-  return true;
+  return sendRaw({ ch: 'cmd', id, vehicle, cmd, ...(mode !== undefined ? { mode } : {}) });
 }
 
 function linkBUrl(): string {

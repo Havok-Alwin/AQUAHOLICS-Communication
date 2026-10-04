@@ -4,11 +4,14 @@
 //   status     {ch:'status', vehicle, t, cs:{...}}             SLOW, 2 Hz, only while the link is LIVE (logic 8)
 //   params     {ch:'params', vehicle, params:{BATT_*...}}       logic 6
 //   statustext {ch:'statustext', vehicle, t, severity, text}   logic 7
-//   backend    {ch:'backend', t, links:{USV1:{state, error}}}  1 Hz and on every link change
+//   backend    {ch:'backend', t, links:{USV1:{state, error, port, baud, sysid}}, ports:[{path, label}]}
+//              1 Hz and on every link change (ports: link B only)
 //   modes      {ch:'modes', vehicle, modes:[...]}               logic 9: on connect (MP's names)
 //   cmdack     {ch:'cmdack', vehicle, id, cmd, status, detail, t} logic 9: every command update
 // Frontend -> backend (logic 9):
 //   cmd        {ch:'cmd', id, vehicle, cmd:'arm'|'disarm'|'mode', mode?}
+//   connect    {ch:'connect', id, vehicle, port, baud, sysid?}   connect a vehicle slot to a port
+//   disconnect {ch:'disconnect', id, vehicle}                    answered with cmdack (cmd connect/disconnect)
 using System.Reflection;
 using System.Text.Json;
 using MissionPlanner;
@@ -110,7 +113,7 @@ public static class LinkBMessages
         w.WriteNumber("t", t);
     });
 
-    public static byte[] Backend(long t, IEnumerable<VehicleLink> links) => Write(w =>
+    public static byte[] Backend(long t, IEnumerable<VehicleLink> links, IReadOnlyList<SerialPortInfo>? ports = null) => Write(w =>
     {
         w.WriteString("ch", "backend");
         w.WriteNumber("t", t);
@@ -123,9 +126,28 @@ public static class LinkBMessages
                 w.WriteString("error", error);
             else
                 w.WriteNull("error");
+            if (link.Config is { } c)
+            {
+                w.WriteString("port", c.Port);
+                w.WriteNumber("baud", c.Baud);
+                if (c.ExpectedSysId is { } sysid)
+                    w.WriteNumber("sysid", sysid);
+            }
             w.WriteEndObject();
         }
         w.WriteEndObject();
+        if (ports != null)
+        {
+            w.WriteStartArray("ports");
+            foreach (var p in ports)
+            {
+                w.WriteStartObject();
+                w.WriteString("path", p.Path);
+                w.WriteString("label", p.Label);
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+        }
     });
 
     private static void WriteValue(Utf8JsonWriter w, string name, object? value)

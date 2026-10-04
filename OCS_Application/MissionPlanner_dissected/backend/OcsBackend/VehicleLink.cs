@@ -45,6 +45,8 @@ public enum LinkState
     Live,
     /// <summary>Connected, but the autopilot has been silent for longer than LostAfter.</summary>
     Lost,
+    /// <summary>No port chosen: the operator has not connected this vehicle (or disconnected it).</summary>
+    Off,
 }
 
 /// <summary>One STATUSTEXT, as link B's {ch:'statustext', vehicle, t, severity, text}.</summary>
@@ -72,9 +74,14 @@ public sealed class VehicleLink : IDisposable
     private const int MinBytes = 10;
     private static readonly TimeSpan MaxReadPerPass = TimeSpan.FromSeconds(1);
 
-    private readonly VehicleLinkConfig _config;
+    private VehicleLinkConfig? _config;
+    private readonly string _name;
     private readonly Func<VehicleLinkConfig, ICommsSerial> _openPort;
     private readonly object _lock = new();
+    private bool _reconfigure;
+    private VehicleLinkConfig? _pendingConfig;
+    // The MAVLinkInterface inside MP's blocking Open(), so Configure can cancel it.
+    private volatile MAVLinkInterface? _opening;
 
     private MAVLinkInterface? _mav;
     private StreamRates? _rates;
@@ -87,12 +94,65 @@ public sealed class VehicleLink : IDisposable
 
     /// <param name="openPort">Creates the port for a connect attempt (tests pass a fake).</param>
     public VehicleLink(VehicleLinkConfig config, Func<VehicleLinkConfig, ICommsSerial>? openPort = null)
+        : this(config.Name, config, openPort)
     {
+    }
+
+    /// <summary>A vehicle slot; null config: OFF until Configure (the operator presses Connect).</summary>
+    public VehicleLink(string name, VehicleLinkConfig? config, Func<VehicleLinkConfig, ICommsSerial>? openPort = null)
+    {
+        _name = name;
         _config = config;
+        _state = config == null ? LinkState.Off : LinkState.Closed;
         _openPort = openPort ?? (c => new SerialPort { PortName = c.Port, BaudRate = c.Baud });
     }
 
-    public string Name => _config.Name;
+    public string Name => _name;
+
+    // The active config, on the link thread while connecting or connected (never OFF there).
+    private VehicleLinkConfig Cfg => _config ?? throw new InvalidOperationException($"{_name} is not configured");
+
+    /// <summary>The port this slot uses (or tries to use); null while OFF.</summary>
+    public VehicleLinkConfig? Config { get { lock (_lock) return _reconfigure ? _pendingConfig : _config; } }
+
+    /// <summary>
+    /// Connect this slot to a port (config), or disconnect it (null). Thread-safe; the link thread
+    /// drops the current connection and applies it on its next pass. Reconnect = Configure(Config).
+    /// </summary>
+    public void Configure(VehicleLinkConfig? config)
+    {
+        if (config != null && config.Name != _name)
+            config = config with { Name = _name };
+        lock (_lock)
+        {
+            _pendingConfig = config;
+            _reconfigure = true;
+        }
+        CancelOpen();
+    }
+
+    // MP's Open() blocks the link thread for up to CONNECT_TIMEOUT_SECONDS waiting for heartbeats. Its
+    // loop checks frmProgressReporter.doWorkArgs.CancelRequested on every pass (each heartbeat wait is
+    // at most 2.2 s), so a Disconnect / Reconnect takes effect within seconds, not after the timeout.
+    // The reporter exists only once Open() has started, so wait briefly for it.
+    private void CancelOpen()
+    {
+        var mav = _opening;
+        if (mav == null)
+            return;
+        Task.Run(async () =>
+        {
+            for (var i = 0; i < 100 && _opening == mav; i++)
+            {
+                if (mav.frmProgressReporter?.doWorkArgs is { } args)
+                {
+                    args.CancelRequested = true;
+                    return;
+                }
+                await Task.Delay(50);
+            }
+        });
+    }
 
     public LinkState State { get { lock (_lock) return _state; } }
 
@@ -153,6 +213,8 @@ public sealed class VehicleLink : IDisposable
         {
             Step();
             Thread.Sleep(State is LinkState.Live or LinkState.Lost ? 1 : 50);  // MP: Task.Delay(1)
+            if (State == LinkState.Off)
+                Thread.Sleep(200);
         }
         Disconnect();
     }
@@ -160,6 +222,29 @@ public sealed class VehicleLink : IDisposable
     /// <summary>One pass of the loop. Blocks while connecting (up to ConnectTimeout).</summary>
     public void Step()
     {
+        bool reconfigure;
+        VehicleLinkConfig? next;
+        lock (_lock)
+        {
+            reconfigure = _reconfigure;
+            next = _pendingConfig;
+            _reconfigure = false;
+        }
+        if (reconfigure)
+        {
+            Disconnect();
+            _config = next;
+            Error = null;
+            _retryAt = DateTime.MinValue;
+        }
+        if (_config == null)
+        {
+            if (_mav != null)
+                Disconnect();
+            SetState(LinkState.Off);
+            return;
+        }
+
         if (_mav == null)
         {
             if (DateTime.UtcNow >= _retryAt)
@@ -204,7 +289,7 @@ public sealed class VehicleLink : IDisposable
         SendGcsHeartbeat(mav);
 
         var silent = DateTime.UtcNow - mav.MAV.lastvalidpacket;
-        SetState(silent > _config.LostAfter ? LinkState.Lost : LinkState.Live);
+        SetState(silent > Cfg.LostAfter ? LinkState.Lost : LinkState.Live);
     }
 
     /// <summary>Time since the autopilot's last valid packet, or null if not connected.</summary>
@@ -220,39 +305,55 @@ public sealed class VehicleLink : IDisposable
     private void Connect()
     {
         SetState(LinkState.Connecting);
-        var mav = new MAVLinkInterface { CONNECT_TIMEOUT_SECONDS = _config.ConnectTimeout.TotalSeconds };
+        var mav = new MAVLinkInterface { CONNECT_TIMEOUT_SECONDS = Cfg.ConnectTimeout.TotalSeconds };
         try
         {
-            mav.BaseStream = _openPort(_config);
+            mav.BaseStream = _openPort(Cfg);
+            _opening = mav;
+            if (_reconfigure)  // a Configure that came before Open() started
+                CancelOpen();
             mav.Open(false, false, false);  // getparams, skipconnectedcheck, showui
         }
         catch (Exception e)
         {
+            _opening = null;
             Fail($"connect failed: {e.Message}", mav);
+            return;
+        }
+        _opening = null;
+
+        bool reconfigured;
+        lock (_lock)
+            reconfigured = _reconfigure;
+        if (reconfigured)
+        {
+            // Cancelled by Disconnect / Reconnect: not a failure; the next pass applies the new config.
+            try { mav.Dispose(); } catch { /* port already closed by Open's cancel */ }
+            SetState(LinkState.Closed);
             return;
         }
 
         // NoUIReporter swallows the reason; MP's doConnect also only checks IsOpen.
         if (mav.BaseStream == null || !mav.BaseStream.IsOpen)
         {
-            Fail($"no vehicle on {_config.Port}: port did not open, or no heartbeat within "
-                 + $"{_config.ConnectTimeout.TotalSeconds:0} s", mav);
+            Fail($"no vehicle on {Cfg.Port}: port did not open, or no heartbeat within "
+                 + $"{Cfg.ConnectTimeout.TotalSeconds:0} s", mav);
             return;
         }
 
         var sysid = mav.MAV.sysid;
-        if (_config.ExpectedSysId is { } expected && sysid != expected)
+        if (Cfg.ExpectedSysId is { } expected && sysid != expected)
         {
-            Fail($"wrong vehicle on {_config.Port}: sysid {sysid}, expected {expected} (radios swapped?)", mav);
+            Fail($"wrong vehicle on {Cfg.Port}: sysid {sysid}, expected {expected} (radios swapped?)", mav);
             return;
         }
 
-        Console.WriteLine($"{Name}: connected on {_config.Port}, sysid {sysid} compid {mav.MAV.compid}, "
+        Console.WriteLine($"{Name}: connected on {Cfg.Port}, sysid {sysid} compid {mav.MAV.compid}, "
                           + $"type {mav.MAV.aptype}, autopilot {mav.MAV.apname}");
         var batt = new BatteryParams(mav, sysid, mav.MAV.compid);
         batt.Changed += p => ParamsChanged?.Invoke(this, p);
         var commands = new VehicleCommands(mav, sysid, mav.MAV.compid, u => CommandUpdated?.Invoke(this, u),
-                                           _config.CommandTimeout, _config.ArmTimeout);
+                                           Cfg.CommandTimeout, Cfg.ArmTimeout);
         mav.OnPacketReceived += (_, msg) => OnPacket(msg, sysid, mav.MAV.compid, batt, commands);
         lock (_lock)
         {
@@ -294,7 +395,7 @@ public sealed class VehicleLink : IDisposable
     private void SendGcsHeartbeat(MAVLinkInterface mav)
     {
         var now = DateTime.UtcNow;
-        if (now - _lastHeartbeatSent < _config.HeartbeatPeriod)
+        if (now - _lastHeartbeatSent < Cfg.HeartbeatPeriod)
             return;
         _lastHeartbeatSent = now;
         var hb = new MAVLink.mavlink_heartbeat_t
@@ -309,11 +410,11 @@ public sealed class VehicleLink : IDisposable
 
     private void Fail(string reason, MAVLinkInterface? pending = null)
     {
-        Console.Error.WriteLine($"{Name}: {reason}; retry in {_config.RetryDelay.TotalSeconds:0} s");
+        Console.Error.WriteLine($"{Name}: {reason}; retry in {Cfg.RetryDelay.TotalSeconds:0} s");
         Error = reason;
         pending?.Dispose();
         Disconnect();
-        _retryAt = DateTime.UtcNow + _config.RetryDelay;
+        _retryAt = DateTime.UtcNow + Cfg.RetryDelay;
     }
 
     private void Disconnect()

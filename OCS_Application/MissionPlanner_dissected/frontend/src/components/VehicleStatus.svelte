@@ -5,6 +5,7 @@
   import { formatAge } from '../lib/source';
   import { MOCK } from '../lib/mode';
   import VehicleCommands from './VehicleCommands.svelte';
+  import ConnectBar from './ConnectBar.svelte';
   import { vehicleBackend, vehicles } from '../lib/sources';
   import { severityLevel, severityName } from '../lib/severity';
   import { displayUnits, toDisplay, type UnitKind } from '../lib/units';
@@ -26,6 +27,7 @@
     const l = $link;
     if (!l) return $backend.state === 'live' ? 'Not configured on the vehicle backend' : 'Vehicle backend not connected';
     if (l.state === 'live') return null;
+    if (l.state === 'off') return 'Not connected: choose the port and press Connect';
     if (l.state === 'lost') return 'Link LOST: no data from the vehicle';
     if (l.state === 'connecting') return `Connecting…${l.error ? ` (last attempt: ${l.error})` : ''}`;
     return `No connection: ${l.error ?? 'not connected yet'}`;
@@ -64,6 +66,7 @@
   );
 </script>
 
+<ConnectBar {vehicle} />
 {#if linkProblem}
   <div class="link-problem">{linkProblem}</div>
 {/if}

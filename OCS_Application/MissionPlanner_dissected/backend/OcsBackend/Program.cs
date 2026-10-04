@@ -1,12 +1,14 @@
 // Vehicle backend entry point.
-// No arguments: Phase A, the .NET 10 check without hardware. Load the MP DLLs and construct the
-// objects the backend will use.
-// `--vehicle NAME=PORT[@BAUD][#SYSID]` (repeatable): connects each vehicle (logic 8), serves
-// link B and the frontend (LinkBServer), and prints link state changes, battery params, vehicle
-// messages and, once a second, the link state and roll/pitch/yaw.
-// `--http URL` link B address (default http://127.0.0.1:5080). `--web DIR` the built frontend
-// (default: frontend/dist found upwards; `--web none` serves link B only).
-// Example: dotnet run -- --vehicle USV1=/dev/ttyACM0@115200#1
+// `dotnet run` (no arguments): serves the operator display on http://127.0.0.1:5080 with one slot
+// per vehicle (USV1, UAV1). Connect each one from the display (port list, Connect / Disconnect /
+// Reconnect); the choice is saved (VehicleSettings) and restored at the next start.
+// `--vehicle NAME=PORT[@BAUD][#SYSID]` (repeatable): connect a slot at start instead (not saved).
+// `--http URL` (default http://127.0.0.1:5080). `--web DIR|none` the built frontend (default:
+// frontend/dist found upwards). `--check`: the .NET 10 load check only (Phase A), then exit.
+// `--extra-port PATH` (repeatable, testing): offer a port the discovery does not list (e.g. a
+// simulator's /dev/pts/N).
+// Prints link state changes, battery params, vehicle messages, commands, and once a second the
+// state and roll/pitch/yaw of each connected vehicle.
 using System.Reflection;
 using MissionPlanner;
 using MissionPlanner.Comms;
@@ -42,19 +44,38 @@ public static class Program
         Console.WriteLine("MP built-in stream re-request off (cs.rate* = -1). Our start rates: "
             + string.Join(", ", StreamRates.StartRates.Select(r => $"{r.Key} {r.Value}")));
 
+        // Units are display-only (logic 10): CurrentState's multipliers are process-wide and feed link A's
+        // heartbeats to RoboCommand, so anything but 1 would publish wrong speeds and altitudes.
+        if (CurrentState.multiplierspeed != 1 || CurrentState.multiplieralt != 1 || CurrentState.multiplierdist != 1)
+        {
+            Console.Error.WriteLine("CurrentState unit multipliers are not 1: refusing to start (heartbeats would be wrong).");
+            return 1;
+        }
+
         _ = serial;
         mav.Dispose();
 
         var vehicles = new List<VehicleLinkConfig>();
+        var extraPorts = new List<SerialPortInfo>();
+        var check = false;
         var url = LinkBServer.DefaultUrl;
         var web = LinkBServer.FindFrontend();
         for (var i = 0; i < args.Length; i += 2)
         {
+            if (args[i] == "--check")
+            {
+                check = true;
+                i--;  // no value
+                continue;
+            }
             var value = i + 1 < args.Length ? args[i + 1] : null;
             switch (args[i])
             {
                 case "--vehicle" when value != null && ParseVehicle(value) is { } config:
                     vehicles.Add(config);
+                    break;
+                case "--extra-port" when value != null:
+                    extraPorts.Add(new SerialPortInfo(value, $"{Path.GetFileName(value)} (extra)"));
                     break;
                 case "--http" when value != null:
                     url = value;
@@ -63,17 +84,17 @@ public static class Program
                     web = value == "none" ? null : Path.GetFullPath(value);
                     break;
                 default:
-                    Console.Error.WriteLine("Usage: OcsBackend [--vehicle NAME=PORT[@BAUD][#SYSID]]... [--http URL] [--web DIR|none]");
+                    Console.Error.WriteLine("Usage: OcsBackend [--vehicle NAME=PORT[@BAUD][#SYSID]]... [--http URL] [--web DIR|none] [--extra-port PATH]... [--check]");
                     return 2;
             }
         }
 
-        if (vehicles.Count == 0)
+        if (check)
         {
             Console.WriteLine("Phase A: .NET 10 load check passed (no hardware).");
             return 0;
         }
-        return RunVehicles(vehicles, url, web);
+        return RunVehicles(vehicles, url, web, extraPorts);
     }
 
     // NAME=PORT[@BAUD][#SYSID], e.g. USV1=/dev/ttyUSB0@57600#1
@@ -107,13 +128,29 @@ public static class Program
         return rest.Length == 0 ? null : new VehicleLinkConfig(name, rest, baud, sysid);
     }
 
-    private static int RunVehicles(List<VehicleLinkConfig> configs, string url, string? web)
+    /// <summary>The vehicle slots the display shows (frontend/src/lib/config.ts VEHICLES).</summary>
+    private static readonly string[] Slots = { "USV1", "UAV1" };
+
+    private static int RunVehicles(List<VehicleLinkConfig> configs, string url, string? web, List<SerialPortInfo> extraPorts)
     {
         using var stop = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 
-        var links = configs.Select(c => new VehicleLink(c)).ToList();
-        using var hub = new LinkBHub(links);
+        // One slot per vehicle: --vehicle wins, else the saved connection, else OFF (connect from the display).
+        var settings = new VehicleSettings();
+        var saved = configs.Count == 0 ? settings.Load() : new Dictionary<string, VehicleSettings.Entry?>();
+        var links = Slots.Concat(configs.Select(c => c.Name)).Distinct().Select(name =>
+        {
+            var config = configs.FirstOrDefault(c => c.Name == name)
+                         ?? (saved.TryGetValue(name, out var e) && e != null ? new VehicleLinkConfig(name, e.Port, e.Baud, e.SysId) : null);
+            if (config != null)
+                Console.WriteLine($"{name}: {(configs.Any(c => c.Name == name) ? "from --vehicle" : $"restored from {settings.Path}")}: {config.Port} @ {config.Baud}");
+            return new VehicleLink(name, config);
+        }).ToList();
+        using var hub = new LinkBHub(links, settings: configs.Count == 0 ? settings : null,
+                                     listPorts: () => SerialPorts.List().Concat(extraPorts).ToList());
+        hub.ConnectReplied += (l, u) =>
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {l.Name}: {u.Kind} {u.Status.ToUpperInvariant()}: {u.Detail}");
         using var linkA = new LinkAHub(links);
         var app = LinkBServer.Build(hub, url, web, stop.Token, linkA);
         try { app.StartAsync().GetAwaiter().GetResult(); }
@@ -127,6 +164,7 @@ public static class Program
         Console.WriteLine($"Link A (OCS): ws{url[4..]}{LinkAMessages.Path}");
         Console.WriteLine($"Link B: ws{url[4..]}{LinkBServer.Path}"
                           + (web != null ? $"; frontend {url}/ from {web}" : "; no frontend served (not built?)"));
+        Console.WriteLine($"Operator display: {url}/  (connect the vehicles there)");
         var threads = links.Select(link =>
         {
             link.StateChanged += (l, s) =>
@@ -145,7 +183,7 @@ public static class Program
 
         while (!stop.Token.WaitHandle.WaitOne(1000))
         {
-            foreach (var link in links)
+            foreach (var link in links.Where(l => l.State != LinkState.Off))
             {
                 var mav = link.Mav;
                 var line = $"{DateTime.Now:HH:mm:ss} {link.Name} {link.State}";

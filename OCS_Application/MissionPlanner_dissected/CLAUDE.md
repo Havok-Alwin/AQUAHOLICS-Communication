@@ -27,17 +27,18 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
   mode shows live vehicle data end to end. Link A is built (`LinkA.cs`, `RobotState.cs`; OCS side
   `../vehicle_link.py`): real mode publishes RobotX heartbeats from real telemetry.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. Link B transport is done; link C is not.
+  all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. Link B and link C transports are done.
   In mock mode, `src/lib/mock.ts` feeds link B messages, and that file is excluded from production
   builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review logic 9 (logic 3 and 8 are committed; their rows still say "review"). All logic items except 4 are done. Remaining work:
-- Frontend, not in the logic table: the map (Leaflet, local base layer, Task 4 keep-out areas and the
-  moving object, using the cadence in `pacing.ts`); the RoboCommand panel and its transport (link C
-  SSE from `../main.py`, which needs a CORS header there).
+Review link C and the RoboCommand panel (logic 3 and 8 are committed; their rows still say "review"). All logic items except 4 are done. Remaining work:
+- Frontend, not in the logic table: the map (Leaflet, local base layer; vehicles from link B; course,
+  UAV geofence, Task 4 keep-out zones and the moving object from link C `state`; the cadence in
+  `pacing.ts`).
+- Task 4 responses in real mode (IncidentAck, ReadinessReport): only local test mode answers today.
 - Bench: `dotnet run -- --vehicle USV1=<port>@<baud>#<sysid>` against the real Pixhawk (USB, then
   radio) is the .NET 10 hardware check.
 - Logic 4 is covered by logic 0 (rAF frame clock instead of invalidate-on-change). Close it on review.
@@ -180,6 +181,32 @@ headless Chrome, both served by the backend and through the Vite proxy. Checked:
 params, messages, LOST -> OFFLINE + "Link LOST", recovery, backend killed -> everything OFFLINE,
 backend restarted -> page reconnects by itself. Note: MP takes `battery_voltage` from
 BATTERY_STATUS (EXTRA3), not SYS_STATUS, so with EXTRA3 off the battery reads 0 V = CRITICAL.
+
+## Link C (built)
+
+OCS (`../main.py`) -> operator display, read-only Server-Sent Events, `../link_c.py` (standard
+library), `http://127.0.0.1:5081/linkc` (`config.LINK_C_*`). Two messages, JSON in `data:` lines:
+`state`, the whole OCS picture from `link_c_snapshot()` in `main.py` (MQTT connection and broker,
+team, run: declared / declaration_seq / started / run_id, tiers, the 17 preflight items, command
+counts and last command, last error, MQTT queue drops, course corners, the declared UAV geofence,
+Task 4 state, link A per vehicle), every second and right after a change; and `log`, each
+`[COMMAND]` / `[ERROR]` / `[VEHICLE...]` console line in order (the last 100 are replayed to a new
+display). Task 4 state (`link_c.Task4State`): keep-out zones per vehicle type until an AllClear for
+that type, the latest MovingObjectAlert (position, heading, speed, affected types, OCS receive time),
+the latest AssistanceRequest and ReadinessConfirm; cleared at a new run_id. Never blocks the OCS:
+OCS threads only append to memory; each display has its own thread, a slow one loses old log lines
+(`log_dropped`) and is dropped after a 2 s blocked write. CORS: only `config.LINK_C_ALLOWED_ORIGINS`
+(this display on :5080 and the Vite dev server); other origins get 403. `main.py` changes are
+additive (hooks in `output`, `set_connection_state`, `set_preflight`, the Task 4 branch, RunStart,
+the RunDeclaration geofence). Tests: `../tests/test_link_c.py`.
+
+Frontend: `lib/linkC.ts` (EventSource on the page's host, port 5081; reconnects by itself),
+`lib/ocs.ts` (types, `ocsState`, `ocsLog`), `components/RoboCommandPanel.svelte`: RoboCommand
+connection, run, preflight (summary + checklist), heartbeats per vehicle, commands (counts, last,
+log), Task 4 items with their age; NOT LIVE + dimmed when the feed is down. Mock mode feeds a mock
+state (dev only). End-to-end 2026-10-04: OCS real mode + local broker + simulator + fake boat +
+backend; KeepOutZone / MovingObjectAlert / AllClear published to the OCS showed and cleared; OCS
+killed -> panel OFFLINE "NOT LIVE"; OCS restarted -> reconnected by itself, new run shown.
 
 ## Link A (built)
 

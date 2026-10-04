@@ -30,8 +30,8 @@ separately (for example, on another laptop).
   responses for protocol testing.
 - The source of `Heartbeat.current_task` (TASK_NONE until it is decided).
 - Passing validated course data into the navigation/vehicle control system.
-- An operator dashboard; connection and command status are currently shown in
-  the console and session log.
+- Task 4 responses in real mode (IncidentAck, ReadinessReport); only local
+  test mode answers them today.
 - Integration with the separately running RoboCommand application on the
   other laptop.
 
@@ -73,6 +73,7 @@ lists the flags.
 | `ROBOTX_PORT` | `1883` | Broker port |
 | `ROBOTX_NETWORK_STRICT` | `1` | `0` turns network-check failures into warnings |
 | `ROBOTX_VEHICLE_BACKEND` | `ws://127.0.0.1:5080/linka` | Link A address of the vehicle backend (real mode) |
+| `ROBOTX_LINKC_PORT` | `5081` | Port of the operator display feed (link C) on 127.0.0.1 |
 
 Example, against the Robocmd simulator on the same machine:
 
@@ -149,6 +150,17 @@ comes from armed + flight mode with the same rules as the operator display
 
 Tests (standard library only): `python3 -m unittest discover -s tests`.
 
+## Operator display feed (link C)
+
+The OCS serves a read-only Server-Sent Events feed at
+`http://127.0.0.1:5081/linkc` for the operator display (`link_c.py`): the
+RoboCommand connection, run, preflight checklist, commands, course, UAV
+geofence, Task 4 items (keep-out zones, moving object) and the vehicle
+heartbeat state, every second and on change, plus the `[COMMAND]`, `[ERROR]`
+and `[VEHICLE]` console lines. It never blocks the OCS: a slow or closed
+display is dropped and reconnects by itself. Only the display's own pages may
+read it (`LINK_C_ALLOWED_ORIGINS` in `config.py`).
+
 ## Network setup
 
 By default the OCS discovers the DHCP-provided IPv4 default gateway and uses it
@@ -185,6 +197,8 @@ bridging is off, and Internet sharing is off.
 - `logger.py` — best-effort session logging.
 - `vehicle_link.py` — link A client (vehicle backend WebSocket) and heartbeat
   fields from real telemetry.
-- `tests/` — unit tests for `vehicle_link.py`.
+- `link_c.py` — link C, the read-only status feed for the operator display,
+  and the Task 4 state it shows.
+- `tests/` — unit tests for `vehicle_link.py` and `link_c.py`.
 - `../Robocmd_Application/gen/python/` — generated protobuf classes used by the
   OCS; the application adds this directory to its Python import path.

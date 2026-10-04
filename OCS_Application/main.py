@@ -145,6 +145,7 @@ from robotx import rx_commands_pb2
 from robotx import rx_common_pb2
 
 import vehicle_link
+import link_c
 
 
 # ============================================================
@@ -167,6 +168,15 @@ def output(message="", level="info"):
         pass
     log_level = getattr(logging, str(level).upper(), logging.INFO)
     safe_log(logger, log_level, "%s", message)
+    # Link C: the operator display's log. Never blocks (link_c.py).
+    if link_c_server is not None and isinstance(message, str):
+        for prefix in ("[COMMAND]", "[ERROR]", "[VEHICLE"):
+            if message.startswith(prefix):
+                try:
+                    link_c_server.log(prefix.strip("[]").split()[0].lower(), message)
+                except Exception:
+                    pass
+                break
 
 
 def set_connection_state(value, detail=""):
@@ -175,6 +185,7 @@ def set_connection_state(value, detail=""):
         connection_state = value
     suffix = f" | {detail}" if detail else ""
     output(f"[MQTT STATUS] {value}{suffix}", "warning" if value in {"Reconnecting", "Disconnected"} else "info")
+    link_c_notify()
 
 
 # ============================================================
@@ -198,6 +209,24 @@ run_id = None
 
 
 heartbeat_thread_started = False
+
+
+# Link C (link_c.py): the read-only status feed for the operator display.
+link_c_server = None
+
+# The geofence sent in the RunDeclaration, [[lat, lon], ...], for the display.
+declared_geofence = None
+
+# Task 4 commands accepted in the current run (keep-out zones, moving object...).
+task4_state = link_c.Task4State(rx_common_pb2)
+
+
+def link_c_notify():
+    if link_c_server is not None:
+        try:
+            link_c_server.notify()
+        except Exception:
+            pass
 
 
 processed_command_sequences = set()
@@ -258,6 +287,7 @@ def set_preflight(key, status, detail=""):
     with state_lock:
         preflight[key] = (status, detail)
     safe_log(logger, logging.INFO, "Preflight | %s=%s %s", key, status, detail)
+    link_c_notify()
 
 
 def preflight_summary():
@@ -880,6 +910,9 @@ def send_run_declaration(
         )
 
 
+    global declared_geofence
+    declared_geofence = [[latitude, longitude] for latitude, longitude in geofence_points]
+
     geofence = [
 
         common_pb2.LatLng(
@@ -1235,6 +1268,7 @@ def process_command(
         with state_lock:
             if run_id != new_run_id:
                 processed_command_sequences.clear()
+                task4_state.reset()  # nothing from a previous run stays on the display
             run_id = new_run_id
             run_started = True
             processed_command_sequences.add(command.seq)
@@ -1345,6 +1379,9 @@ def process_command(
             processed_command_sequences.add(
                 command.seq
             )
+            task4_state.apply(command_type, getattr(command, command_type), command.seq)
+
+        link_c_notify()
 
 
         if config.LOCAL_TEST_MODE:
@@ -1373,6 +1410,68 @@ def process_command(
         processed_command_sequences.add(
             command.seq
         )
+
+
+# ============================================================
+# LINK C SNAPSHOT
+# ============================================================
+
+def link_c_snapshot():
+    """Everything the operator display shows from the OCS (link_c.py `state`).
+    Called on link C's own threads."""
+    passed, total, overall = preflight_summary()
+    with state_lock:
+        course = validated_course
+        snapshot = {
+            "team_id": config.TEAM_ID,
+            "local_test": config.LOCAL_TEST_MODE,
+            "connection": connection_state,
+            "broker": config.MQTT_BROKER,
+            "run": {
+                "declared": run_declaration_sent,
+                "declaration_seq": declaration_seq,
+                "started": run_started,
+                "run_id": run_id,
+            },
+            "tiers": {f"task{n}": tier_value_name(n) for n in range(1, 5)},
+            "preflight": {
+                "items": [{"key": key, "label": label, "status": preflight[key][0], "detail": preflight[key][1]}
+                          for key, label in PREFLIGHT_ITEMS],
+                "passed": passed,
+                "total": total,
+                "overall": overall,
+            },
+            "command": {"last": last_command_status, "counts": dict(command_counts)},
+            "last_error": last_error_line,
+            "mqtt_dropped": message_queue_dropped,
+            "mqtt_stale": message_queue_stale,
+            "geofence": declared_geofence,
+            "task4": task4_state.as_dict(),
+        }
+    snapshot["course"] = None if course is None else {
+        "course_id": course.course_id,
+        "pinger_freq_hz": course.pinger_freq_hz,
+        "corners": [[c.latitude, c.longitude] for c in course.corners],
+    }
+    snapshot["vehicles"] = vehicle_link_client.status() if vehicle_link_client is not None else None
+    return snapshot
+
+
+def tier_value_name(n):
+    return getattr(config, f"TASK{n}_TIER", "").upper()
+
+
+def start_link_c():
+    global link_c_server
+    try:
+        server = link_c.LinkCServer(config.LINK_C_HOST, config.LINK_C_PORT,
+                                    config.LINK_C_ALLOWED_ORIGINS, link_c_snapshot)
+        server.start()
+    except OSError as error:
+        output(f"[ERROR] Link C (operator display) not started on {config.LINK_C_HOST}:{config.LINK_C_PORT}: {error}", "error")
+        return
+    link_c_server = server
+    output(f"     Operator display feed (link C): http://{config.LINK_C_HOST}:{config.LINK_C_PORT}/linkc")
 
 
 # ============================================================
@@ -2153,6 +2252,8 @@ def main():
     if not run_startup_checks():
         return
 
+    start_link_c()
+
 
     output(f"     team_id = {config.TEAM_ID}")
     output(f"     vehicles = {', '.join(config.VEHICLE_IDS)}")
@@ -2217,6 +2318,8 @@ def main():
         stop_event.set()
         if vehicle_link_client is not None:
             vehicle_link_client.stop()
+        if link_c_server is not None:
+            link_c_server.stop()
         try:
             message_queue.put_nowait(None)
         except queue.Full:

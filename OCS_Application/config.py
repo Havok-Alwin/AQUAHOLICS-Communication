@@ -151,6 +151,26 @@ LINK_A_STALE_S = 1.0
 
 
 # ============================================================
+# OPERATOR DISPLAY (LINK C)
+#
+# Read-only Server-Sent Events for the operator display (link_c.py):
+# RoboCommand connection, run, preflight, commands, course, geofence and
+# Task 4. Local only. Pages from other origins cannot read it.
+# ============================================================
+
+LINK_C_HOST = "127.0.0.1"
+
+LINK_C_PORT = int(os.getenv("ROBOTX_LINKC_PORT", "5081"))
+
+LINK_C_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:5080",    # served by the vehicle backend (deployment)
+    "http://localhost:5080",
+    "http://127.0.0.1:5173",    # Vite dev server
+    "http://localhost:5173",
+]
+
+
+# ============================================================
 # LOCAL TEST MODE
 #
 # IMPORTANT:

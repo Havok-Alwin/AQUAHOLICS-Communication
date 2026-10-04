@@ -2,6 +2,7 @@
   import Hud from './components/Hud.svelte';
   import Panel from './components/Panel.svelte';
   import Placeholder from './components/Placeholder.svelte';
+  import RoboCommandPanel from './components/RoboCommandPanel.svelte';
   import TopBar from './components/TopBar.svelte';
   import VehicleStatus from './components/VehicleStatus.svelte';
   import { VEHICLES, type VehicleId } from './lib/config';
@@ -42,7 +43,7 @@
 
     <div class="robocommand">
       <Panel title="RoboCommand (via OCS)" source={ocs}>
-        <Placeholder text="Connection, preflight, run ID, commands and responses (link C)" />
+        <RoboCommandPanel />
       </Panel>
     </div>
   </main>

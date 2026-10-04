@@ -5,7 +5,8 @@ import { VEHICLES, type VehicleId } from './config';
 import type { CurrentStateFields } from './currentState';
 import { LINK_B } from './pacing';
 import { MESSAGE_HIGH_HOLD_MS, messageHighFrom } from './severity';
-import { vehicleBackend, vehicles } from './sources';
+import { ocs, vehicleBackend, vehicles } from './sources';
+import { handleLinkC, type OcsState } from './ocs';
 import { handleLinkB } from './telemetry';
 
 const FAST_HZ = LINK_B.fastHz;
@@ -120,10 +121,40 @@ function statustext(id: VehicleId, tMs: number, severity: number, text: string):
   handleLinkB({ ch: 'statustext', vehicle: id, t: Date.now(), severity, text });
 }
 
+// Link C as the OCS would send it: a declared, running run with one Task 4 keep-out zone and a
+// moving object heading east at 1.5 m/s (re-alerted every 10 s, like RoboCommand might).
+function ocsStateAt(tMs: number): OcsState {
+  const items: OcsState['preflight']['items'] = [
+    { key: 'mqtt', label: 'MQTT client connected', status: 'PASS', detail: '' },
+    { key: 'schema', label: 'Approved protobuf schema release', status: 'PASS', detail: '' },
+    { key: 'dhcp', label: 'RoboCommand-facing interface set to DHCP', status: 'MANUAL', detail: 'operator' },
+    { key: 'team', label: 'Assigned team_id configured', status: 'CONFIRM', detail: 'RMKE' },
+  ];
+  const alertAt = Date.now() - (tMs % 10000);
+  return {
+    ch: 'state', t: Date.now(), team_id: 'RMKE', local_test: true, connection: 'Connected', broker: 'mock',
+    run: { declared: true, declaration_seq: 1, started: true, run_id: 1 },
+    tiers: { task1: 'CORE', task2: 'DISRUPTIVE', task3: 'DISRUPTIVE', task4: 'DISRUPTIVE' },
+    preflight: { items, passed: 2, total: items.length, overall: 'CONFIRM' },
+    command: { last: 'accepted type=keep_out_zone seq=2 run=1', counts: { accepted: 2, rejected: 0, ignored: 0 } },
+    last_error: '', mqtt_dropped: 0, mqtt_stale: 0, log_dropped: 0,
+    course: { course_id: 'MOCK', pinger_freq_hz: 25000, corners: [[1.2960, 103.7758], [1.2960, 103.7772], [1.2974, 103.7772], [1.2974, 103.7758], [1.2960, 103.7758]] },
+    geofence: [[1.2962, 103.7760], [1.2962, 103.7770], [1.2972, 103.7770], [1.2972, 103.7760], [1.2962, 103.7760]],
+    task4: {
+      keep_out_zones: [{ vehicle_type: 'USV', center: [1.2968, 103.7762], radius_m: 15, seq: 2, at: Date.now() - 60000 }],
+      moving_object: { position: [1.2964, 103.7760 + 0.0000135 * ((tMs - (tMs % 10000)) / 1000)], heading_deg: 90, speed_mps: 1.5, affected: ['USV'], seq: 3, at: alertAt },
+      assistance_request: null, readiness_confirm: null,
+    },
+    vehicles: { USV1: 'LIVE', UAV1: 'LIVE' },
+  };
+}
+
 export function startMock(): () => void {
   // Real per-vehicle link state comes from the backend's connect / link-lost logic (logic 8).
   vehicleBackend.setConnected(true);
   for (const id of VEHICLES) vehicles[id].setConnected(true);
+  ocs.setConnected(true);
+  handleLinkC({ ch: 'log', t: Date.now(), kind: 'command', text: '[COMMAND] accepted type=keep_out_zone seq=2 run=1' });
   // Battery thresholds as the backend would read them from the vehicle (USV 4S, UAV 6S).
   handleLinkB({ ch: 'params', vehicle: 'USV1', params: { BATT_LOW_VOLT: 14.0, BATT_CRT_VOLT: 13.2, BATT_CAPACITY: 10000, BATT_LOW_MAH: 2000, BATT_CRT_MAH: 1000 } });
   handleLinkB({ ch: 'params', vehicle: 'UAV1', params: { BATT_LOW_VOLT: 21.0, BATT_CRT_VOLT: 19.8, BATT_CAPACITY: 5000, BATT_LOW_MAH: 1000, BATT_CRT_MAH: 500 } });
@@ -153,6 +184,8 @@ export function startMock(): () => void {
     }
   }, 1000 / SLOW_HZ);
 
+  const ocsTimer = setInterval(() => handleLinkC(ocsStateAt(performance.now())), 1000);
+
   const step = new Map<VehicleId, number>();
   const texts = setInterval(() => {
     const t = performance.now();
@@ -169,6 +202,8 @@ export function startMock(): () => void {
     clearInterval(fast);
     clearInterval(slow);
     clearInterval(texts);
+    clearInterval(ocsTimer);
+    ocs.setConnected(false);
     timers.forEach(clearTimeout);
     vehicleBackend.setConnected(false);
     for (const id of VEHICLES) vehicles[id].setConnected(false);

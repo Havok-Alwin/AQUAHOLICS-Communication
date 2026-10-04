@@ -34,10 +34,9 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 ## Next step
 
-Review link C and the RoboCommand panel (logic 3 and 8 are committed; their rows still say "review"). All logic items except 4 are done. Remaining work:
-- Frontend, not in the logic table: the map (Leaflet, local base layer; vehicles from link B; course,
-  UAV geofence, Task 4 keep-out zones and the moving object from link C `state`; the cadence in
-  `pacing.ts`).
+Review the map (logic 3 and 8 are committed; their rows still say "review"). All logic items except 4 are done, and every panel of the display is built. Remaining work:
+- A base layer for the map: a georeferenced image of the course or self-made tiles, as
+  `frontend/public/map/base.json` + the image (see "Map").
 - Task 4 responses in real mode (IncidentAck, ReadinessReport): only local test mode answers today.
 - Bench: `dotnet run -- --vehicle USV1=<port>@<baud>#<sysid>` against the real Pixhawk (USB, then
   radio) is the .NET 10 hardware check.
@@ -181,6 +180,31 @@ headless Chrome, both served by the backend and through the Vite proxy. Checked:
 params, messages, LOST -> OFFLINE + "Link LOST", recovery, backend killed -> everything OFFLINE,
 backend restarted -> page reconnects by itself. Note: MP takes `battery_voltage` from
 BATTERY_STATUS (EXTRA3), not SYS_STATUS, so with EXTRA3 off the battery reads 0 V = CRITICAL.
+
+## Map (built)
+
+`components/MapPanel.svelte` (Leaflet 1.9.4 from npm, bundled: no CDN, no online tiles; a build
+check found no tile URLs in the bundle) and `lib/mapModel.ts` (pure, tested with vitest:
+`npm test`). Draws: the course boundary and the declared UAV geofence (link C), Task 4 keep-out
+zones per vehicle type and the moving object (link C), vehicles with heading arrow (FAST yaw) and
+track (link B; position only with a 3D fix, as for link A). Moving object: dead-reckoned from its
+last MovingObjectAlert (position, heading, speed, OCS receive time) with its 10 m ring; after
+`MAP_OBJECT_MAX_AGE_MS` (10 s) it is drawn grey, STALE, at its last reported position, not hidden.
+A vehicle that is not LIVE is drawn grey at its last position with its state and age, and its track
+stops. Safety banner on the map while a LIVE vehicle is inside a keep-out zone of its type, or 10 m
+or closer to the (estimated) moving object if it affects that type. Cadence from `pacing.ts`: redraw
+every 300 ms, 2 s while no vehicle is live; track 200 points; Follow (auto-pan every 3 s) per vehicle;
+the view fits the course when a new course arrives.
+
+Base layer (optional; the overlays work without it): `map/base.json` next to `index.html` (put it in
+`frontend/public/map/`, copied to `dist/` by the build), either
+`{"image": "map/course.png", "bounds": [[south, west], [north, east]], "opacity": 1}` (a georeferenced
+image) or `{"tiles": "map/tiles/{z}/{x}/{y}.png", "maxZoom": 22}` (self-made tiles). Do not
+bulk-download OSM tiles. Without it the map says "No base layer" and draws on a plain background.
+
+End-to-end 2026-10-04: fake boat + backend + OCS real mode + simulator; test base image; KeepOutZone
+and MovingObjectAlert published: zone, object (STALE after 10 s), boat and the "USV1 INSIDE keep-out
+zone" banner all shown. Mock mode shows the same overlays.
 
 ## Link C (built)
 

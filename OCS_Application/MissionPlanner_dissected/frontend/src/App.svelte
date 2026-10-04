@@ -1,7 +1,7 @@
 <script lang="ts">
   import Hud from './components/Hud.svelte';
   import Panel from './components/Panel.svelte';
-  import Placeholder from './components/Placeholder.svelte';
+  import MapPanel from './components/MapPanel.svelte';
   import RoboCommandPanel from './components/RoboCommandPanel.svelte';
   import TopBar from './components/TopBar.svelte';
   import VehicleStatus from './components/VehicleStatus.svelte';
@@ -37,7 +37,7 @@
 
     <div class="map">
       <Panel title="Map">
-        <Placeholder text="Leaflet, local base layer: vehicles, keep-out areas, moving object" />
+        <MapPanel />
       </Panel>
     </div>
 

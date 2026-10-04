@@ -116,7 +116,8 @@ function statustext(id: VehicleId, tMs: number, severity: number, text: string):
     if (cur !== text) high.set(id, { text, severity: pick.severity, at: tMs });
     else high.get(id)!.severity = pick.severity;
   }
-  handleLinkB({ ch: 'statustext', vehicle: id, t: tMs, severity, text });
+  // Wall clock like the backend's (the log shows it); tMs is the mock's own timeline.
+  handleLinkB({ ch: 'statustext', vehicle: id, t: Date.now(), severity, text });
 }
 
 export function startMock(): () => void {

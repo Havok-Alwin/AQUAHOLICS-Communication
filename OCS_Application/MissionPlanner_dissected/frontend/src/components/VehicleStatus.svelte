@@ -3,10 +3,11 @@
   import { GROUP_LABEL, bindingsFor, formatBinding, type Binding, type Group } from '../lib/bindings';
   import { VEHICLE_TYPE, type VehicleId } from '../lib/config';
   import { formatAge } from '../lib/source';
-  import { vehicles } from '../lib/sources';
+  import { MOCK } from '../lib/mode';
+  import { vehicleBackend, vehicles } from '../lib/sources';
   import { severityLevel, severityName } from '../lib/severity';
   import { displayUnits, toDisplay, type UnitKind } from '../lib/units';
-  import { attitude, vehicleLog, vehicleParams, vehicleState } from '../lib/telemetry';
+  import { attitude, vehicleLink, vehicleLog, vehicleParams, vehicleState } from '../lib/telemetry';
   import { batteryLevel, batteryThresholds, warnings } from '../lib/warnings';
 
   let { vehicle }: { vehicle: VehicleId } = $props();
@@ -15,6 +16,19 @@
   const status = $derived(vehicles[vehicle].status);
   const cs = $derived(vehicleState[vehicle]);
   const live = $derived($status.state === 'live');
+
+  // Logic 8: why there is no live data, as the backend reports the vehicle link.
+  const link = $derived(vehicleLink[vehicle]);
+  const backend = vehicleBackend.status;
+  const linkProblem = $derived.by((): string | null => {
+    if (MOCK) return null;
+    const l = $link;
+    if (!l) return $backend.state === 'live' ? 'Not configured on the vehicle backend' : 'Vehicle backend not connected';
+    if (l.state === 'live') return null;
+    if (l.state === 'lost') return 'Link LOST: no data from the vehicle';
+    if (l.state === 'connecting') return `Connecting…${l.error ? ` (last attempt: ${l.error})` : ''}`;
+    return `No connection: ${l.error ?? 'not connected yet'}`;
+  });
   const hasData = $derived(Object.keys($cs).length > 0);
 
   const state = $derived(robotState(type, $cs));
@@ -49,6 +63,9 @@
   );
 </script>
 
+{#if linkProblem}
+  <div class="link-problem">{linkProblem}</div>
+{/if}
 {#if !hasData}
   <div class="empty">No status received</div>
 {:else}
@@ -173,6 +190,13 @@
   .empty {
     color: var(--muted);
     font-size: 0.85rem;
+  }
+  .link-problem {
+    color: var(--offline);
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+    overflow-wrap: anywhere;
   }
   .not-live {
     background: var(--stale);

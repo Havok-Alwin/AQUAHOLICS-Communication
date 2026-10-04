@@ -49,7 +49,24 @@ export interface StatusTextMsg {
   text: string;
 }
 
-export type LinkBMsg = FastMsg | SlowMsg | ParamsMsg | StatusTextMsg;
+/** Vehicle link state in the backend (logic 8, VehicleLink.cs). */
+export type VehicleLinkState = 'closed' | 'connecting' | 'live' | 'lost';
+
+export interface VehicleLinkInfo {
+  state: VehicleLinkState;
+  /** Why the last connect failed or the link dropped; null while connected. */
+  error: string | null;
+}
+
+/** Backend status, 1 Hz and on every link change. Keeps the backend LIVE when no vehicle is. */
+export interface BackendMsg {
+  ch: 'backend';
+  /** Sender clock, ms. */
+  t: number;
+  links: Partial<Record<string, VehicleLinkInfo>>;
+}
+
+export type LinkBMsg = FastMsg | SlowMsg | ParamsMsg | StatusTextMsg | BackendMsg;
 
 export const attitude: Record<VehicleId, AttitudeTrack> = Object.fromEntries(
   VEHICLES.map((id) => [id, new AttitudeTrack()]),
@@ -80,7 +97,7 @@ const paramStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<Batter
 export const vehicleParams: Record<VehicleId, Readable<BatteryParams | undefined>> = paramStores;
 
 export interface LogEntry {
-  /** Local receive time (Date.now()). */
+  /** Backend receive time, Unix ms (StatusTextMsg.t). */
   at: number;
   severity: number;
   text: string;
@@ -99,7 +116,39 @@ const logGates = Object.fromEntries(
 
 export const vehicleLog: Record<VehicleId, Readable<readonly LogEntry[]>> = logStores;
 
+const linkStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<VehicleLinkInfo | undefined>(undefined)])) as Record<
+  VehicleId,
+  Writable<VehicleLinkInfo | undefined>
+>;
+
+/**
+ * Each vehicle's link as the backend reports it; undefined until a backend message names it
+ * (or while the backend is not connected).
+ */
+export const vehicleLink: Record<VehicleId, Readable<VehicleLinkInfo | undefined>> = linkStores;
+
+/** The backend went away: no vehicle link state is known any more. */
+export function clearVehicleLinks(): void {
+  for (const id of VEHICLES) {
+    linkStores[id].set(undefined);
+    vehicles[id].setConnected(false);
+  }
+}
+
 export function handleLinkB(msg: LinkBMsg): void {
+  // Any message proves the backend is up; the 1 Hz backend message covers the no-vehicle case.
+  vehicleBackend.markUpdate();
+  if (msg.ch === 'backend') {
+    for (const id of VEHICLES) {
+      const info = msg.links[id];
+      linkStores[id].set(info);
+      // Logic 8: anything but LIVE is OFFLINE, with the age of the last update. LOST included:
+      // the backend declares it after 1 s without vehicle data, sooner than STALE (2 s after the
+      // last SLOW) would, and a page loaded while LOST never says CONNECTING for a silent vehicle.
+      vehicles[id].setConnected(info?.state === 'live');
+    }
+    return;
+  }
   if (!(msg.vehicle in vehicles)) return;
   if (msg.ch === 'att') {
     attitude[msg.vehicle].push({ t: msg.t, roll: msg.r, pitch: msg.p, yaw: msg.y });
@@ -107,13 +156,13 @@ export function handleLinkB(msg: LinkBMsg): void {
     paramStores[msg.vehicle].set(msg.params);
   } else if (msg.ch === 'statustext') {
     const log = logs[msg.vehicle];
-    log.push({ at: Date.now(), severity: msg.severity, text: msg.text });
+    // Sender time, not arrival: a newly connected page gets the backend's history replayed.
+    log.push({ at: msg.t, severity: msg.severity, text: msg.text });
     if (log.length > MESSAGE_LOG_MAX) log.splice(0, log.length - MESSAGE_LOG_MAX);
     logGates[msg.vehicle].push(log.slice());
   } else {
     // Replace, never merge: a field the backend stopped sending must not linger as current.
     gates[msg.vehicle].push(msg.cs);
     vehicles[msg.vehicle].markUpdate();
-    vehicleBackend.markUpdate();
   }
 }

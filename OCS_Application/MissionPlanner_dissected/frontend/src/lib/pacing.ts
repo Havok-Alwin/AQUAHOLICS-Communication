@@ -30,6 +30,9 @@ export const CLOCK_TICK_MS = 250;
 /** HUD fps / packet-rate counter. */
 export const STATS_MS = 1000;
 
+/** Link B WebSocket reconnect backoff: doubles from min to max while the backend is down. */
+export const LINK_B_RECONNECT_MS = { min: 500, max: 5000 } as const;
+
 /** Link B rates the backend is expected to send (stream-rate setup is logic 3, backend). */
 export const LINK_B = {
   fastHz: 20, // attitude, on change
@@ -37,12 +40,13 @@ export const LINK_B = {
 } as const;
 
 /**
- * How long without an update before a source is STALE. Logic 8: the backend sends a vehicle's SLOW
- * snapshot only while that vehicle's link is LIVE (a valid autopilot packet within 1 s), so a
- * silent vehicle shows STALE here ~3 s after its last packet (MP's "No Data" warning time).
+ * How long without an update before a source is STALE. Logic 8: a silent vehicle goes OFFLINE
+ * first, ~1 s after its last packet, when the backend reports its link LOST (telemetry.ts); it
+ * also stops sending that vehicle's SLOW. STALE is the safety net if updates stop for any other
+ * reason (MP warns "No Data" only after 3 s).
  */
 export const STALE_AFTER_MS = {
-  vehicleBackend: 2000, // 4 missed SLOW messages
+  vehicleBackend: 2000, // any link B message counts; the backend message alone comes at 1 Hz
   vehicle: 2000,
   ocs: 3000, // link C, ~1 Hz
 } as const;

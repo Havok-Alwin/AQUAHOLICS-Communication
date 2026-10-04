@@ -23,26 +23,21 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
   Logic 8 is built: `VehicleLink.cs` (connect, read loop, link-lost, reconnect, STATUSTEXT and
   battery-param events), run by `Program.cs --vehicle ...`. Link B phase 1 (backend) is built:
   `LinkBMessages.cs`, `LinkBHub.cs`, `LinkBServer.cs` (Kestrel on `http://127.0.0.1:5080`: WebSocket
-  `/linkb` + `frontend/dist`). The frontend has no link B client yet (phase 2). No link A yet.
+  `/linkb` + `frontend/dist`). Link B phase 2 (frontend client, `lib/linkB.ts`) is built, so real
+  mode shows live vehicle data end to end. No link A yet.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
-  all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. There is no link B/C transport yet.
+  all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. Link B transport is done; link C is not.
   In mock mode, `src/lib/mock.ts` feeds link B messages, and that file is excluded from production
   builds.
 - Tech stack: frontend decided. See the "Tech stack" section below.
 
 ## Next step
 
-Review link B phase 1 (logic 3 and 8 are committed; their rows still say "review"). All frontend logic items are done. Remaining work:
+Review link B phase 2 (logic 3 and 8 are committed; their rows still say "review"). All frontend logic items are done. Remaining work:
 - Frontend, not in the logic table: the map (Leaflet, local base layer, Task 4 keep-out areas and the
   moving object, using the cadence in `pacing.ts`); the RoboCommand panel (link C); the transport
   clients (link B WebSocket, link C SSE) that call `handleLinkB` and set the Sources connected.
-- Link B phase 2 (frontend): a WebSocket client (`lib/linkB.ts`) that calls `handleLinkB`, sets
-  `vehicleBackend`/`vehicles` connected, reconnects with backoff, and in dev (Vite :5173) targets
-  `ws://127.0.0.1:5080/linkb` (production: same origin). Frontend changes it needs: a `backend`
-  message type in `LinkBMsg` (mark `vehicleBackend` live from it, not from SLOW, and show each
-  vehicle's link state and error); use `msg.t` instead of `Date.now()` for statustext log entries,
-  because a new client gets the history replayed.
-- Then link A to `../main.py`.
+- Link A to `../main.py` (vehicle heartbeat data for RoboCommand).
 - Backend logic item 9 (commands), which needs link B for the frontend to send them.
 - Bench: `dotnet run -- --vehicle USV1=<port>@<baud>#<sysid>` against the real Pixhawk (USB, then
   radio) is the .NET 10 hardware check.
@@ -169,6 +164,22 @@ first gets the link states, params, last attitude and the last 1000 STATUSTEXTs 
 checks `SlowFields` against `currentState.ts`. **Before logic 9 (commands):** the WebSocket accepts
 any Origin today (read-only, localhost only). Check `Origin` before accepting commands, or any page
 open in the kiosk browser could send them.
+
+Frontend side (`lib/linkB.ts`, real mode only): WebSocket to `/linkb` on the page's own origin; the
+Vite dev server proxies `/linkb` to `127.0.0.1:5080`, so the URL is the same in dev and deployment.
+Reconnects with backoff 0.5 s doubling to 5 s (`LINK_B_RECONNECT_MS`). Any message marks the
+vehicle backend live. `backend` sets each vehicle's link (`vehicleLink` store): only LIVE counts as
+connected, so a LOST vehicle is OFFLINE with the age of its last update about 1 s after its last
+packet. The vehicle card says why ("Link LOST", "No connection: <error>", "Not configured on the
+vehicle backend", "Vehicle backend not connected"). The socket closing makes every link B source
+OFFLINE. Log entries use the backend time `t` (the history is replayed to new clients).
+
+End-to-end check (2026-10-04, no hardware): a fake ArduPilot boat (MAVLink v1 on a Linux
+pseudo-terminal, a scratch script) -> backend through MP's real `SerialPort` on .NET 10 -> page in
+headless Chrome, both served by the backend and through the Vite proxy. Checked: LIVE data and HUD,
+params, messages, LOST -> OFFLINE + "Link LOST", recovery, backend killed -> everything OFFLINE,
+backend restarted -> page reconnects by itself. Note: MP takes `battery_voltage` from
+BATTERY_STATUS (EXTRA3), not SYS_STATUS, so with EXTRA3 off the battery reads 0 V = CRITICAL.
 
 ## Tech stack
 

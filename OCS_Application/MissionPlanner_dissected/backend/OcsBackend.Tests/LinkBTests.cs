@@ -81,7 +81,7 @@ public class LinkBMailboxTests
     [Fact]
     public void SlowClientGetsOnlyTheLatestPerKeyButEveryLogEntryInOrder()
     {
-        var client = new LinkBHub.Client();
+        var client = new Mailbox(LinkBHub.MaxQueuedLog);
         for (var i = 0; i < 10; i++)
         {
             client.PostLatest("status:USV1", B($"status {i}"));
@@ -99,7 +99,7 @@ public class LinkBMailboxTests
     [Fact]
     public void LogBacklogBeyondTheLimitMarksTheClientForDisconnect()
     {
-        var client = new LinkBHub.Client();
+        var client = new Mailbox(LinkBHub.MaxQueuedLog);
         for (var i = 0; i < LinkBHub.MaxQueuedLog; i++)
             client.PostLog(B("x"));
         Assert.False(client.Overflowed);

@@ -1,5 +1,6 @@
-// Link B server (Kestrel): the WebSocket at /linkb and, if found, the frontend's built files
-// (frontend/dist) at /. Same origin in deployment, so the kiosk page needs no CORS.
+// Backend server (Kestrel): link B WebSocket at /linkb, link A WebSocket at /linka (LinkA.cs, for
+// ../main.py), and, if found, the frontend's built files (frontend/dist) at /. Same origin in
+// deployment, so the kiosk page needs no CORS.
 // Binds to localhost by default: the operator display runs on the OCS laptop.
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -14,7 +15,8 @@ public static class LinkBServer
     public const string DefaultUrl = "http://127.0.0.1:5080";
     public const string Path = "/linkb";
 
-    public static WebApplication Build(LinkBHub hub, string url, string? webRoot, CancellationToken stop)
+    public static WebApplication Build(LinkBHub hub, string url, string? webRoot, CancellationToken stop,
+                                       LinkAHub? linkA = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls(url);
@@ -32,6 +34,20 @@ public static class LinkBServer
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
             await hub.ServeAsync(ws, stop);
         });
+
+        if (linkA != null)
+        {
+            app.Map(LinkAMessages.Path, async (HttpContext ctx) =>
+            {
+                if (!ctx.WebSockets.IsWebSocketRequest)
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+                using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+                await linkA.ServeAsync(ws, stop);
+            });
+        }
 
         if (webRoot != null)
         {

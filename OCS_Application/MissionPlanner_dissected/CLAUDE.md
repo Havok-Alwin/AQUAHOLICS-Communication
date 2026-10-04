@@ -24,7 +24,8 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
   battery-param events), run by `Program.cs --vehicle ...`. Link B phase 1 (backend) is built:
   `LinkBMessages.cs`, `LinkBHub.cs`, `LinkBServer.cs` (Kestrel on `http://127.0.0.1:5080`: WebSocket
   `/linkb` + `frontend/dist`). Link B phase 2 (frontend client, `lib/linkB.ts`) is built, so real
-  mode shows live vehicle data end to end. No link A yet.
+  mode shows live vehicle data end to end. Link A is built (`LinkA.cs`, `RobotState.cs`; OCS side
+  `../vehicle_link.py`): real mode publishes RobotX heartbeats from real telemetry.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
   all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. Link B transport is done; link C is not.
   In mock mode, `src/lib/mock.ts` feeds link B messages, and that file is excluded from production
@@ -33,12 +34,11 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 ## Next step
 
-Review link B phase 2 (logic 3 and 8 are committed; their rows still say "review"). All frontend logic items are done. Remaining work:
+Review link A (logic 3 and 8 are committed; their rows still say "review"). All frontend logic items are done. Remaining work:
 - Frontend, not in the logic table: the map (Leaflet, local base layer, Task 4 keep-out areas and the
-  moving object, using the cadence in `pacing.ts`); the RoboCommand panel (link C); the transport
-  clients (link B WebSocket, link C SSE) that call `handleLinkB` and set the Sources connected.
-- Link A to `../main.py` (vehicle heartbeat data for RoboCommand).
-- Backend logic item 9 (commands), which needs link B for the frontend to send them.
+  moving object, using the cadence in `pacing.ts`); the RoboCommand panel and its transport (link C
+  SSE from `../main.py`, which needs a CORS header there).
+- Backend logic item 9 (commands). Check the WebSocket `Origin` first (see "Link B").
 - Bench: `dotnet run -- --vehicle USV1=<port>@<baud>#<sysid>` against the real Pixhawk (USB, then
   radio) is the .NET 10 hardware check.
 - Logic 4 is covered by logic 0 (rAF frame clock instead of invalidate-on-change). Close it on review.
@@ -181,6 +181,36 @@ params, messages, LOST -> OFFLINE + "Link LOST", recovery, backend killed -> eve
 backend restarted -> page reconnects by itself. Note: MP takes `battery_voltage` from
 BATTERY_STATUS (EXTRA3), not SYS_STATUS, so with EXTRA3 off the battery reads 0 V = CRITICAL.
 
+## Link A (built)
+
+Vehicle backend -> OCS (`../main.py`), WebSocket `/linka` on the same Kestrel server, JSON
+(`LinkA.cs`). `hb` per vehicle at 2 Hz, only while its link is LIVE; `backend` (link states) at 1 Hz
+and on change. Latest-wins per client (`Mailbox.cs`, shared with link B).
+
+`hb` = the RobotX `Heartbeat`: `type` (from the name, as `VEHICLE_TYPE`), `state` (`RobotState.cs`),
+`lat lng` (only with a 3D fix: never 0,0), `spd_mps` (groundspeed), `heading_deg` (yaw 0..360),
+`roll_deg`, `pitch_deg`; UAV only: `altitude_hae_m` and `flight_phase`. `altitude_hae_m` is
+GPS_RAW_INT `alt_ellipsoid` (a MAVLink 2 extension; CurrentState has no ellipsoid height, and AMSL
+differs from HAE by the geoid height) from the last 2 s with a 3D fix. Anything unknown is left out
+and listed in `missing`. `depth_m` is for UUVs: never sent. Bench check: the UAV telemetry port must
+speak MAVLink 2 (`SERIALn_PROTOCOL` = 2), or `altitude_hae_m` is always missing.
+
+OCS side (`../vehicle_link.py`, standard library only, so the OCS dependencies do not change): a
+minimal RFC 6455 client that reconnects (0.5 s doubling to 5 s). `main.py` (additive changes) starts
+it at startup in real mode, and after the RunDeclaration publishes one heartbeat per fresh `hb`
+(younger than `config.LINK_A_STALE_S` = 1 s, each used once, only while MQTT is connected). Operator
+output: `[VEHICLE]` / `[VEHICLE LINK]` console lines on every change (stale, live, link state and
+error, missing fields) and `vehicles: USV1=LIVE ...` in the 5 s status line. Local test mode is
+unchanged (simulated telemetry). Tests: `OcsBackend.Tests/LinkATests.cs`, `../tests/test_vehicle_link.py`.
+
+End-to-end check (2026-10-04, no hardware): two fake ArduPilot vehicles (boat sysid 1, quad sysid 2,
+MAVLink 2 on pseudo-terminals) -> backend -> link A -> `main.py` real mode -> MQTT (a local amqtt
+broker) -> RoboCommand simulator (RunDeclaration, RunStart) and a decoding subscriber. Checked: both
+vehicles at 2 Hz with independent sequences; USV1 without altitude/phase; UAV1 `altitude_hae_m` 20.5
+(the ellipsoid height, not the 12.0 m AMSL) and AIRBORNE; one vehicle silenced -> only its
+heartbeats stop within 1 s, console STALE, resume on its own; backend killed -> all heartbeats stop,
+OCS reconnects when it is back; local test mode still publishes the simulated heartbeats.
+
 ## Tech stack
 
 ### Decided (2026-10-04)
@@ -249,7 +279,12 @@ BATTERY_STATUS (EXTRA3), not SYS_STATUS, so with EXTRA3 off the battery reads 0 
   The full binding table sits behind a collapsed "All telemetry" section. The derivation lives in
   `frontend/src/lib/autonomy.ts`: AUTO when armed and the mode is in the per-type autonomous list,
   MANUAL when armed otherwise, flight phase from `landed_state`. These rules are **provisional:
-  confirm with the team**. Link A must use the same rules. KILLED needs the e-stop signal.
+  confirm with the team**. Link A uses the same rules (`backend/OcsBackend/RobotState.cs`; a test
+  compares its mode lists with `autonomy.ts`). Modes are compared upper-case, letters and digits
+  only, because MP's names come from the parameter metadata and differ: Rover `SmartRTL`, Copter
+  `Smart_RTL` and `Auto RTL` (fixed 2026-10-04: SmartRTL/Auto RTL were read as MANUAL). Rover
+  `Dock`/`Circle` are not in MP's metadata, so MP cannot name them: they would read as MANUAL.
+  KILLED needs the e-stop signal.
 
 ### Open
 
@@ -257,6 +292,9 @@ BATTERY_STATUS (EXTRA3), not SYS_STATUS, so with EXTRA3 off the battery reads 0 
   "killed" means for each vehicle's e-stop).
 
 - Who sets `current_task` and task reports for the USV (no companion computer): OCS operator input?
+  Until decided, link A heartbeats send TASK_NONE (`main.py` `vehicle_current_task`).
+- Link A decision to confirm: when a vehicle's data stops, the OCS stops that vehicle's heartbeats
+  (and tells the operator) rather than publishing STATE_UNKNOWN heartbeats without telemetry.
 - How UAV OpenCV results reach the OCS: over the same telemetry radio as MAVLink, or a separate link.
 - Telemetry radio air data rate (sets the stream-rate budget).
 

@@ -142,6 +142,9 @@ from robotx import rx_course_pb2
 from robotx import rx_requests_pb2
 from robotx import rx_reports_pb2
 from robotx import rx_commands_pb2
+from robotx import rx_common_pb2
+
+import vehicle_link
 
 
 # ============================================================
@@ -519,12 +522,16 @@ def validate_course(course):
 def publish_heartbeat(
     client,
     vehicle_id,
-    vehicle_type,
-    latitude,
-    longitude,
-    speed,
-    heading
+    vehicle_type=None,
+    latitude=None,
+    longitude=None,
+    speed=None,
+    heading=None,
+    heartbeat_fields=None
 ):
+    """Publish one RxReport heartbeat. Simulation passes the five values;
+    real mode passes heartbeat_fields (vehicle_link.heartbeat_fields), the
+    complete Heartbeat with unknown fields left unset."""
 
     sequence = (
         next_report_sequence(
@@ -533,7 +540,7 @@ def publish_heartbeat(
     )
 
 
-    heartbeat = rx_reports_pb2.Heartbeat(
+    heartbeat = rx_reports_pb2.Heartbeat(**heartbeat_fields) if heartbeat_fields is not None else rx_reports_pb2.Heartbeat(
 
         state=
         common_pb2.STATE_AUTO,
@@ -615,7 +622,7 @@ def publish_heartbeat(
 def heartbeat_loop(client):
 
     if not config.LOCAL_TEST_MODE:
-        output("[VEHICLE] Waiting for real vehicle telemetry integration.")
+        real_heartbeat_loop(client)
         return
 
     from simulation.telemetry import get_telemetry
@@ -652,6 +659,61 @@ def heartbeat_loop(client):
             first_cycle = False
 
         stop_event.wait(config.HEARTBEAT_PERIOD)
+
+
+# ============================================================
+# REAL HEARTBEATS (LINK A)
+#
+# One RobotX heartbeat per `hb` from the vehicle backend (2 Hz per vehicle,
+# only while that vehicle's link is live). Old data is never published: an hb
+# is used once, only if younger than config.LINK_A_STALE_S, and only while MQTT
+# is connected (nothing is queued for later). When a vehicle's data stops, its
+# heartbeats stop and vehicle_link reports it to the operator.
+# ============================================================
+
+vehicle_link_client = None
+
+# Heartbeat.current_task per vehicle. TASK_NONE until the source of the
+# current task is decided (CLAUDE.md, open question): TASK_UNKNOWN must not be
+# used, and TASK_NONE means "not in a task attempt".
+vehicle_current_task = {vid: rx_common_pb2.TASK_NONE for vid in config.VEHICLE_IDS}
+
+
+def start_vehicle_link():
+    """Real mode: connect to the vehicle backend early, so the operator sees the
+    vehicle links before the RunDeclaration."""
+    global vehicle_link_client
+    if config.LOCAL_TEST_MODE or vehicle_link_client is not None:
+        return
+    vehicle_link_client = vehicle_link.VehicleLinkClient(
+        config.VEHICLE_BACKEND_URL,
+        config.VEHICLE_IDS,
+        stale_s=config.LINK_A_STALE_S,
+        on_event=lambda text, level="info": output(text, level),
+    )
+    vehicle_link_client.start()
+
+
+def real_heartbeat_loop(client):
+    start_vehicle_link()
+    link = vehicle_link_client
+    output(f"[VEHICLE] Heartbeats from the vehicle backend ({config.VEHICLE_BACKEND_URL})")
+    last_serial = 0
+    announced = set()
+    while not stop_event.is_set():
+        for vid, hb, serial in link.wait_for_new(last_serial, timeout=0.25):
+            last_serial = max(last_serial, serial)
+            if not client.is_connected():
+                continue
+            ok, seq = publish_heartbeat(
+                client=client,
+                vehicle_id=vid,
+                heartbeat_fields=vehicle_link.heartbeat_fields(
+                    hb, vehicle_current_task[vid], common_pb2, rx_common_pb2),
+            )
+            if ok and vid not in announced:
+                announced.add(vid)
+                output(f"[HEARTBEAT] {vid} heartbeat published  seq={seq}  STATE_{hb.get('state', 'UNKNOWN')}")
 
 
 # ============================================================
@@ -2081,9 +2143,11 @@ def main():
         )
 
         output(
-            "     Real vehicle telemetry adapter "
-            "still required."
+            "     Vehicle telemetry from the vehicle backend: "
+            f"{config.VEHICLE_BACKEND_URL}"
         )
+
+        start_vehicle_link()
 
 
     if not run_startup_checks():
@@ -2133,7 +2197,9 @@ def main():
                 passed, total, overall = preflight_summary()
                 output(f"[MQTT CURRENT STATE] {current_state} | run={run_id or 'not-started'} | "
                        f"command: {command_text} (ok={counts['accepted']} rejected={counts['rejected']} ignored={counts['ignored']}) | "
-                       f"preflight {passed}/{total} {overall} | dropped_messages={message_queue_dropped} | stale_messages={message_queue_stale}")
+                       f"preflight {passed}/{total} {overall} | dropped_messages={message_queue_dropped} | stale_messages={message_queue_stale}"
+                       + (" | vehicles: " + " ".join(f"{vid}={s}" for vid, s in vehicle_link_client.status().items())
+                          if vehicle_link_client is not None else ""))
                 last_status_report = now
 
 
@@ -2149,6 +2215,8 @@ def main():
     finally:
 
         stop_event.set()
+        if vehicle_link_client is not None:
+            vehicle_link_client.stop()
         try:
             message_queue.put_nowait(None)
         except queue.Full:

@@ -134,6 +134,23 @@ HEARTBEAT_PERIOD = (
 
 
 # ============================================================
+# VEHICLE BACKEND (LINK A)
+#
+# Real mode takes vehicle telemetry for the heartbeats from the vehicle
+# backend (MissionPlanner_dissected/backend) over a local WebSocket; see
+# vehicle_link.py. A vehicle's heartbeat is published only from data younger
+# than LINK_A_STALE_S; older data is never published as current.
+# ============================================================
+
+VEHICLE_BACKEND_URL = os.getenv(
+    "ROBOTX_VEHICLE_BACKEND",
+    "ws://127.0.0.1:5080/linka"
+)
+
+LINK_A_STALE_S = 1.0
+
+
+# ============================================================
 # LOCAL TEST MODE
 #
 # IMPORTANT:

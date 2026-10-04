@@ -21,11 +21,14 @@ separately (for example, on another laptop).
 - Logs connection state, subscriptions, received commands, publications,
   sequence numbers, and parsing/validation errors. Console status remains
   available if file logging fails.
+- Real mode: publishes heartbeats from real vehicle telemetry, received from
+  the vehicle backend over link A (see "Vehicle telemetry (link A)").
 
 ## Still pending
 
-- Real USV/UAV telemetry and vehicle command adapters. Current telemetry and
-  local task responses are simulated for protocol testing.
+- Vehicle command adapters. Local test mode still simulates telemetry and task
+  responses for protocol testing.
+- The source of `Heartbeat.current_task` (TASK_NONE until it is decided).
 - Passing validated course data into the navigation/vehicle control system.
 - An operator dashboard; connection and command status are currently shown in
   the console and session log.
@@ -69,6 +72,7 @@ lists the flags.
 | `ROBOTX_BROKER` | DHCP gateway | Broker hostname or IP override |
 | `ROBOTX_PORT` | `1883` | Broker port |
 | `ROBOTX_NETWORK_STRICT` | `1` | `0` turns network-check failures into warnings |
+| `ROBOTX_VEHICLE_BACKEND` | `ws://127.0.0.1:5080/linka` | Link A address of the vehicle backend (real mode) |
 
 Example, against the Robocmd simulator on the same machine:
 
@@ -124,6 +128,27 @@ the last command and its outcome counts, and the checklist summary, for example
 `[MQTT CURRENT STATE] Connected | run=1 | command: accepted RunStart seq=1
 (ok=1 rejected=0 ignored=0) | preflight 13/17 CONFIRM | ...`.
 
+## Vehicle telemetry (link A)
+
+In real mode the OCS connects at startup to the vehicle backend
+(`MissionPlanner_dissected/backend`, run with `--vehicle ...`), which talks
+MAVLink to each vehicle. For every vehicle message it receives (2 Hz per
+vehicle, sent only while that vehicle's link is live) it publishes one RxReport
+heartbeat. It never publishes old data as current: a message is used once,
+only if it is younger than `LINK_A_STALE_S` (1 s), and only while MQTT is
+connected. When a vehicle's data stops, its heartbeats stop and the console
+says so (`[VEHICLE] USV1 telemetry STALE ... heartbeats to RoboCommand
+STOPPED`). The 5-second status line ends with `vehicles: USV1=LIVE UAV1=...`.
+
+A value the backend does not know is left unset in the heartbeat, never filled
+in, and the console names it once (`heartbeat published WITHOUT ...`): position
+without a 3D GPS fix; the UAV's `altitude_hae_m` without the GPS ellipsoid
+height (MAVLink 2 only); the UAV flight phase while unknown. The robot state
+comes from armed + flight mode with the same rules as the operator display
+(provisional; KILLED needs the e-stop signal). `current_task` is TASK_NONE.
+
+Tests (standard library only): `python3 -m unittest discover -s tests`.
+
 ## Network setup
 
 By default the OCS discovers the DHCP-provided IPv4 default gateway and uses it
@@ -158,5 +183,8 @@ bridging is off, and Internet sharing is off.
 - `task_reports.py` — task report message builders and MQTT publishing.
 - `startup_checks.py` — protobuf schema hash and vehicle ID checks.
 - `logger.py` — best-effort session logging.
+- `vehicle_link.py` — link A client (vehicle backend WebSocket) and heartbeat
+  fields from real telemetry.
+- `tests/` — unit tests for `vehicle_link.py`.
 - `../Robocmd_Application/gen/python/` — generated protobuf classes used by the
   OCS; the application adds this directory to its Python import path.

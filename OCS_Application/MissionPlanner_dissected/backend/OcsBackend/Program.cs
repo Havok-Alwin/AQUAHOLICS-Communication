@@ -114,7 +114,8 @@ public static class Program
 
         var links = configs.Select(c => new VehicleLink(c)).ToList();
         using var hub = new LinkBHub(links);
-        var app = LinkBServer.Build(hub, url, web, stop.Token);
+        using var linkA = new LinkAHub(links);
+        var app = LinkBServer.Build(hub, url, web, stop.Token, linkA);
         try { app.StartAsync().GetAwaiter().GetResult(); }
         catch (IOException e)
         {
@@ -123,6 +124,7 @@ public static class Program
         }
         // Kestrel's host takes over SIGINT/SIGTERM: stop everything when it stops.
         app.Lifetime.ApplicationStopping.Register(stop.Cancel);
+        Console.WriteLine($"Link A (OCS): ws{url[4..]}{LinkAMessages.Path}");
         Console.WriteLine($"Link B: ws{url[4..]}{LinkBServer.Path}"
                           + (web != null ? $"; frontend {url}/ from {web}" : "; no frontend served (not built?)"));
         var threads = links.Select(link =>

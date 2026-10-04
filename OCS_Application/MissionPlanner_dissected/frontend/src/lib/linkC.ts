@@ -7,8 +7,30 @@ import { ocs } from './sources';
 
 const LINK_C_PORT = 5081;
 
+function linkCBase(): string {
+  return `${location.protocol}//${location.hostname}:${LINK_C_PORT}`;
+}
+
 function linkCUrl(): string {
-  return `${location.protocol}//${location.hostname}:${LINK_C_PORT}/linkc`;
+  return `${linkCBase()}/linkc`;
+}
+
+/**
+ * The one operator action on link C: report that the vehicle reached the assistance point and is
+ * loitering, so the OCS sends the ReadinessReport for that AssistanceRequest (../task4.py).
+ */
+export async function reportReady(commandSeq: number): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const res = await fetch(`${linkCBase()}/task4/ready`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command_seq: commandSeq }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; detail?: string };
+    return { ok: res.ok && body.ok === true, detail: body.detail ?? `HTTP ${res.status}` };
+  } catch (error) {
+    return { ok: false, detail: `OCS not reachable: ${String(error)}` };
+  }
 }
 
 export function startLinkC(): () => void {

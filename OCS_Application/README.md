@@ -30,15 +30,13 @@ separately (for example, on another laptop).
   responses for protocol testing.
 - The source of `Heartbeat.current_task` (TASK_NONE until it is decided).
 - Passing validated course data into the navigation/vehicle control system.
-- Task 4 responses in real mode (IncidentAck, ReadinessReport); only local
-  test mode answers them today.
 - Integration with the separately running RoboCommand application on the
   other laptop.
 
 ## Running the OCS
 
-The default is **real mode**: no simulated telemetry, task reports or Task 4
-responses, and no `localhost` fallback. Do not enable simulation with
+The default is **real mode**: no simulated telemetry or task reports, no
+automatic Task 4 ReadinessReport, and no `localhost` fallback. Do not enable simulation with
 competition vehicles.
 
 ```bash
@@ -66,9 +64,9 @@ lists the flags.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ROBOTX_LOCAL_TEST` | `0` | `1` enables local simulation (fake telemetry, reports, Task 4 responses) and the `localhost` fallback |
+| `ROBOTX_LOCAL_TEST` | `0` | `1` enables local simulation (fake telemetry, reports, automatic Task 4 readiness) and the `localhost` fallback |
 | `ROBOTX_AUTO_REPORT_TEST` | `1` | With local test on, `0` disables automatic fake task reports |
-| `ROBOTX_AUTO_TASK4_RESPONSES` | `1` | With local test on, `0` disables automatic fake Task 4 responses |
+| `ROBOTX_AUTO_TASK4_RESPONSES` | `1` | With local test on, `0` stops the automatic ReadinessReport (IncidentAcks are always automatic) |
 | `ROBOTX_BROKER` | DHCP gateway | Broker hostname or IP override |
 | `ROBOTX_PORT` | `1883` | Broker port |
 | `ROBOTX_NETWORK_STRICT` | `1` | `0` turns network-check failures into warnings |
@@ -150,16 +148,39 @@ comes from armed + flight mode with the same rules as the operator display
 
 Tests (standard library only): `python3 -m unittest discover -s tests`.
 
+## Task 4 responses
+
+Same in real and local test mode (`task4.py`), following the handbook's chains:
+
+| RoboCommand sends | The OCS answers |
+|---|---|
+| AssistanceRequest | IncidentAck at once (automatic), then a ReadinessReport when the operator clicks **Report ready** on the display |
+| KeepOutZone | IncidentAck at once |
+| AllClear | IncidentAck at once |
+| MovingObjectAlert | nothing (no acknowledgment in the handbook) |
+| ReadinessConfirm | nothing: it clears the vehicle to resume normal tasking |
+
+Each reply is attributed to our vehicle of the command's domain (USV1 for
+surface, UAV1 for air) and references the command's `seq`. A command for a
+domain we have no vehicle for (UUV) is not acknowledged, and the console says
+so. The ReadinessReport is never automatic in real mode: the operator decides
+the vehicle is at the point and loitering; the confirmation dialog shows its
+distance to the point and its mode. In local test mode it is sent 3 s after
+the IncidentAck (unless `ROBOTX_AUTO_TASK4_RESPONSES=0`). This replaces
+`simulation/task4_responses.py`, which is no longer called: it acked
+MovingObjectAlert and answered ReadinessConfirm with a ReadinessReport.
+
 ## Operator display feed (link C)
 
 The OCS serves a read-only Server-Sent Events feed at
 `http://127.0.0.1:5081/linkc` for the operator display (`link_c.py`): the
 RoboCommand connection, run, preflight checklist, commands, course, UAV
-geofence, Task 4 items (keep-out zones, moving object) and the vehicle
-heartbeat state, every second and on change, plus the `[COMMAND]`, `[ERROR]`
-and `[VEHICLE]` console lines. It never blocks the OCS: a slow or closed
-display is dropped and reconnects by itself. Only the display's own pages may
-read it (`LINK_C_ALLOWED_ORIGINS` in `config.py`).
+geofence, Task 4 items and their replies, and the vehicle heartbeat state,
+every second and on change, plus the `[COMMAND]`, `[ERROR]` and `[VEHICLE]`
+console lines. It never blocks the OCS: a slow or closed display is dropped
+and reconnects by itself. It is read-only except one action, `POST
+/task4/ready` (the operator's ReadinessReport). Only the display's own pages
+may use it (`LINK_C_ALLOWED_ORIGINS` in `config.py`).
 
 ## Network setup
 
@@ -197,8 +218,10 @@ bridging is off, and Internet sharing is off.
 - `logger.py` — best-effort session logging.
 - `vehicle_link.py` — link A client (vehicle backend WebSocket) and heartbeat
   fields from real telemetry.
-- `link_c.py` — link C, the read-only status feed for the operator display,
-  and the Task 4 state it shows.
-- `tests/` — unit tests for `vehicle_link.py` and `link_c.py`.
+- `link_c.py` — link C, the status feed for the operator display, and the
+  Task 4 state it shows.
+- `task4.py` — Task 4 replies: automatic IncidentAcks, the operator's
+  ReadinessReport.
+- `tests/` — unit tests for `vehicle_link.py`, `link_c.py` and `task4.py`.
 - `../Robocmd_Application/gen/python/` — generated protobuf classes used by the
   OCS; the application adds this directory to its Python import path.

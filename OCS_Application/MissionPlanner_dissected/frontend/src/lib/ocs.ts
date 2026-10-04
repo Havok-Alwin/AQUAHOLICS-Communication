@@ -1,11 +1,21 @@
 import { writable, type Readable } from 'svelte/store';
 import { ocs } from './sources';
 
-// Link C: what the OCS (../main.py, link_c.py) reports. Read-only. `state` is the whole picture,
+// Link C: what the OCS (../main.py, link_c.py) reports. Read-only except one operator action, the
+// Task 4 ReadinessReport (linkC.ts reportReady). `state` is the whole picture,
 // sent every second and on change; `log` lines are the OCS console's [COMMAND] / [ERROR] /
 // [VEHICLE] lines, in order. Shapes match link_c_snapshot() in main.py.
 
 export type PreflightStatus = 'PASS' | 'FAIL' | 'WAIT' | 'SKIP' | 'MANUAL' | 'CONFIRM';
+
+/** The OCS's automatic IncidentAck for a Task 4 command (../task4.py). */
+export interface Task4Ack {
+  vehicle: string | null;
+  report_seq: number | null;
+  ok: boolean;
+  detail: string;
+  at: number;
+}
 
 export interface KeepOutZone {
   vehicle_type: string; // 'USV' | 'UAV' | ...
@@ -14,6 +24,18 @@ export interface KeepOutZone {
   seq: number;
   /** OCS receive time, Unix ms. */
   at: number;
+  ack?: Task4Ack | null;
+}
+
+/** AssistanceRequest -> IncidentAck -> ReadinessReport (operator) -> ReadinessConfirm. */
+export interface AssistanceRequest {
+  position: [number, number];
+  vehicle_type: string;
+  seq: number;
+  at: number;
+  ack: Task4Ack | null;
+  readiness: { report_seq: number | null; ok: boolean; at: number } | null;
+  confirmed: { seq: number; at: number } | null;
 }
 
 export interface MovingObject {
@@ -53,8 +75,9 @@ export interface OcsState {
   task4: {
     keep_out_zones: KeepOutZone[];
     moving_object: MovingObject | null;
-    assistance_request: { position: [number, number]; vehicle_type: string; seq: number; at: number } | null;
+    assistance_request: AssistanceRequest | null;
     readiness_confirm: { report_seq: number; vehicle_id: string; seq: number; at: number } | null;
+    last_all_clear?: { vehicle_type: string; seq: number; at: number; ack: Task4Ack | null } | null;
   };
   /** Link A per vehicle as the OCS sees it ('LIVE', 'LOST', 'NO BACKEND', ...); null in local test mode. */
   vehicles: Record<string, string> | null;

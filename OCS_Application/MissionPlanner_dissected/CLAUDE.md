@@ -34,10 +34,9 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 ## Next step
 
-Review the map (logic 3 and 8 are committed; their rows still say "review"). All logic items except 4 are done, and every panel of the display is built. Remaining work:
+Review the Task 4 replies (logic 3 and 8 are committed; their rows still say "review"). All logic items except 4 are done, and every panel of the display is built. Remaining work:
 - A base layer for the map: a georeferenced image of the course or self-made tiles, as
   `frontend/public/map/base.json` + the image (see "Map").
-- Task 4 responses in real mode (IncidentAck, ReadinessReport): only local test mode answers today.
 - Bench: `dotnet run -- --vehicle USV1=<port>@<baud>#<sysid>` against the real Pixhawk (USB, then
   radio) is the .NET 10 hardware check.
 - Logic 4 is covered by logic 0 (rAF frame clock instead of invalidate-on-change). Close it on review.
@@ -205,6 +204,25 @@ bulk-download OSM tiles. Without it the map says "No base layer" and draws on a 
 End-to-end 2026-10-04: fake boat + backend + OCS real mode + simulator; test base image; KeepOutZone
 and MovingObjectAlert published: zone, object (STALE after 10 s), boat and the "USV1 INSIDE keep-out
 zone" banner all shown. Mock mode shows the same overlays.
+
+## Task 4 replies (built, decided 2026-10-04)
+
+`../task4.py`, same in real and local test mode. Chains (handbook + `Mission_details.pdf`):
+AssistanceRequest -> IncidentAck -> ReadinessReport -> ReadinessConfirm; KeepOutZone -> IncidentAck;
+AllClear -> IncidentAck; MovingObjectAlert: no ack. **Decided:** IncidentAcks automatic on receipt
+("immediately"), from our vehicle of the command's domain (no vehicle of that domain, e.g. UUV: no
+ack, console says so); the ReadinessReport only when the operator clicks **Report ready** in the
+RoboCommand panel (confirmation dialog: the vehicle's distance to the point, its mode, warnings if
+far, not in a hold/loiter mode, or not LIVE). Link C's one write action: `POST /task4/ready
+{command_seq}` (Origin-checked, CORS preflight, 4 KB cap). Local test mode sends the ReadinessReport
+3 s after the ack. The old `simulation/task4_responses.py` is no longer called: it acked
+MovingObjectAlert and answered ReadinessConfirm with a ReadinessReport (both against the chains).
+Task4State shows each item's ack, readiness and confirm. Tests: `../tests/test_task4.py`.
+End-to-end 2026-10-04: real mode, commands 100/101/102/120 from a test publisher: 3 IncidentAcks
+with the right command_seq, none for the MovingObjectAlert, browser click on Report ready ->
+ReadinessReport command_seq 120, ReadinessConfirm for its report_seq -> "cleared to resume".
+Not done: the vehicles do not act on Task 4 by themselves (no keep-out fence upload, no transit
+to the assistance point): that is mission/autonomy integration.
 
 ## Link C (built)
 

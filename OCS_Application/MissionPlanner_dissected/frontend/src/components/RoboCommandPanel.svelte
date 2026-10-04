@@ -1,10 +1,18 @@
 <script lang="ts">
   // Link C: the OCS's view of RoboCommand. The handbook asks the operator display to show the
-  // RoboCommand connection state and command receipt / response state. Read-only.
+  // RoboCommand connection state and command receipt / response state. Read-only, except the
+  // Task 4 "Report ready" button (the operator's ReadinessReport), which asks for confirmation.
+  import { tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { formatAge } from '../lib/source';
-  import { ocs } from '../lib/sources';
-  import { ocsLog, ocsState } from '../lib/ocs';
+  import { ocs, vehicles } from '../lib/sources';
+  import { ocsLog, ocsState, type AssistanceRequest, type Task4Ack } from '../lib/ocs';
   import { now } from '../lib/clock';
+  import { reportReady } from '../lib/linkC';
+  import { MOCK } from '../lib/mode';
+  import { VEHICLES, type VehicleId } from '../lib/config';
+  import { distanceM, vehiclePosition } from '../lib/mapModel';
+  import { vehicleState } from '../lib/telemetry';
 
   const status = ocs.status;
   const live = $derived($status.state === 'live');
@@ -17,6 +25,59 @@
   const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour12: false });
   const ago = (ms: number) => formatAge(Math.max(0, $now - ms));
   const ll = (p: [number, number]) => `${p[0].toFixed(6)}, ${p[1].toFixed(6)}`;
+  const ackText = (a: Task4Ack | null | undefined) =>
+    !a ? 'ack pending' : a.ok ? `IncidentAck sent (${a.vehicle}, report ${a.report_seq})` : `NO IncidentAck: ${a.detail}`;
+
+  // --- Task 4 ReadinessReport (operator) ---
+  /** Loiter/hold modes in which a vehicle "loiters" at a point (MP names, letters only). */
+  const HOLDING = new Set(['LOITER', 'HOLD', 'POSHOLD', 'GUIDED', 'BRAKE']);
+  let dialog: HTMLDialogElement | undefined = $state();
+  let cancelButton: HTMLButtonElement | undefined = $state();
+  let readyCheck: { seq: number; vehicle: string; lines: string[]; warnings: string[] } | null = $state(null);
+  let readyResult: { seq: number; ok: boolean; detail: string } | null = $state(null);
+  let sending = $state(false);
+
+  const canReport = (a: AssistanceRequest) => live && !MOCK && !!a.ack?.ok && !a.readiness?.ok && !sending;
+
+  async function askReady(a: AssistanceRequest) {
+    const vehicle = a.ack!.vehicle!;
+    const lines: string[] = [];
+    const warnings: string[] = [];
+    if ((VEHICLES as readonly string[]).includes(vehicle)) {
+      const id = vehicle as VehicleId;
+      const cs = get(vehicleState[id]);
+      const pos = vehiclePosition(cs);
+      if (pos) {
+        const d = distanceM(pos, a.position);
+        lines.push(`${vehicle} is ${d.toFixed(1)} m from the assistance point, mode ${cs.mode ?? 'unknown'}.`);
+        if (d > 15) warnings.push(`${vehicle} is still ${d.toFixed(0)} m away from the point.`);
+        if (cs.mode && !HOLDING.has(cs.mode.toUpperCase().replace(/[^A-Z]/g, '')))
+          warnings.push(`${vehicle} is in ${cs.mode}, not a loiter/hold mode.`);
+      } else warnings.push(`${vehicle} position unknown (no 3D fix or no data).`);
+      if (get(vehicles[id].status).state !== 'live') warnings.push(`${vehicle} is not LIVE.`);
+    }
+    lines.push('RoboCommand answers with ReadinessConfirm, the clearance to resume normal tasking.');
+    readyCheck = { seq: a.seq, vehicle, lines, warnings };
+    await tick();
+    dialog?.showModal();
+    cancelButton?.focus();
+  }
+
+  async function confirmReady() {
+    const check = readyCheck;
+    closeReady();
+    if (!check) return;
+    sending = true;
+    const r = await reportReady(check.seq);
+    readyResult = { seq: check.seq, ok: r.ok, detail: r.detail };
+    sending = false;
+  }
+
+  function closeReady() {
+    dialog?.close();
+    readyCheck = null;
+  }
+
 </script>
 
 {#if !s}
@@ -92,20 +153,44 @@
       {/if}
       {#each s.task4.keep_out_zones as z (z.seq)}
         <div class="alert">Keep-out {z.vehicle_type}: {z.radius_m} m around <span class="mono">{ll(z.center)}</span> <span class="muted">({ago(z.at)})</span></div>
+        <div class="chain" class:bad={z.ack && !z.ack.ok}>{ackText(z.ack)}</div>
       {/each}
+      {#if s.task4.last_all_clear}
+        {@const c = s.task4.last_all_clear}
+        <div class="info">All clear {c.vehicle_type} <span class="muted">({ago(c.at)})</span></div>
+        <div class="chain" class:bad={c.ack && !c.ack.ok}>{ackText(c.ack)}</div>
+      {/if}
       {#if s.task4.assistance_request}
         {@const a = s.task4.assistance_request}
         <div class="info">Assistance request ({a.vehicle_type}) at <span class="mono">{ll(a.position)}</span> <span class="muted">({ago(a.at)})</span></div>
+        <div class="chain" class:bad={a.ack && !a.ack.ok}>1. {ackText(a.ack)}</div>
+        <div class="chain" class:bad={a.readiness && !a.readiness.ok}>
+          2. {#if a.readiness?.ok}ReadinessReport sent (report {a.readiness.report_seq}){:else if a.readiness}ReadinessReport FAILED{:else}Readiness not reported{/if}
+          {#if !a.readiness?.ok}
+            <button class="ready" disabled={!canReport(a)} onclick={() => askReady(a)}>Report ready</button>
+          {/if}
+        </div>
+        <div class="chain">3. {#if a.confirmed}ReadinessConfirm received: cleared to resume <span class="muted">({ago(a.confirmed.at)})</span>{:else}waiting for ReadinessConfirm{/if}</div>
+        {#if readyResult && readyResult.seq === a.seq && !readyResult.ok}<div class="chain bad">Not sent: {readyResult.detail}</div>{/if}
       {/if}
-      {#if s.task4.readiness_confirm}
-        <div class="info">Readiness confirmed for {s.task4.readiness_confirm.vehicle_id} (report {s.task4.readiness_confirm.report_seq})</div>
-      {/if}
-      {#if !s.task4.moving_object && s.task4.keep_out_zones.length === 0 && !s.task4.assistance_request}
+      {#if !s.task4.moving_object && s.task4.keep_out_zones.length === 0 && !s.task4.assistance_request && !s.task4.last_all_clear}
         <div class="muted">No active Task 4 items</div>
       {/if}
     </section>
   </div>
 {/if}
+
+<dialog bind:this={dialog} onclose={() => (readyCheck = null)}>
+  {#if readyCheck}
+    <h3 class="dialog-title">Report {readyCheck.vehicle} ready at the assistance point?</h3>
+    {#each readyCheck.lines as line (line)}<p>{line}</p>{/each}
+    {#each readyCheck.warnings as w (w)}<p class="warning">{w}</p>{/each}
+    <div class="buttons">
+      <button bind:this={cancelButton} onclick={closeReady}>Cancel</button>
+      <button class="confirm" onclick={confirmReady}>SEND READINESS REPORT</button>
+    </div>
+  {/if}
+</dialog>
 
 <style>
   .empty {
@@ -220,5 +305,72 @@
   }
   .info {
     color: var(--connecting);
+  }
+  .chain {
+    padding-left: 0.8rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  .chain.bad {
+    color: var(--offline);
+  }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1rem 0.5rem;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .ready:not(:disabled) {
+    border-color: var(--stale);
+    color: var(--stale);
+    font-weight: 700;
+  }
+  dialog {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--stale);
+    border-radius: 6px;
+    max-width: 28rem;
+    padding: 1rem 1.2rem;
+  }
+  dialog::backdrop {
+    background: rgb(0 0 0 / 0.6);
+  }
+  .dialog-title {
+    font-size: 1rem;
+    color: var(--text);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  dialog p {
+    margin: 0.3rem 0;
+    font-size: 0.9rem;
+  }
+  .warning {
+    color: var(--stale);
+    font-weight: 600;
+  }
+  .buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+  }
+  .buttons button {
+    font-size: 0.9rem;
+    padding: 0.35rem 0.9rem;
+  }
+  .confirm {
+    background: var(--stale);
+    border-color: var(--stale);
+    color: #000;
+    font-weight: 700;
   }
 </style>

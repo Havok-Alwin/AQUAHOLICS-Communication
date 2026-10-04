@@ -154,7 +154,7 @@ class Task4StateTests(unittest.TestCase):
         self.task4.apply("keep_out_zone", self.c.KeepOutZone(center=self.ll(1, 2), radius_m=5, vehicle_type=self.rx.TYPE_USV), 2)
         self.task4.reset()
         self.assertEqual({"keep_out_zones": [], "moving_object": None, "assistance_request": None,
-                          "readiness_confirm": None}, self.task4.as_dict())
+                          "readiness_confirm": None, "last_all_clear": None}, self.task4.as_dict())
 
 
 if __name__ == "__main__":

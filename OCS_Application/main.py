@@ -146,6 +146,8 @@ from robotx import rx_common_pb2
 
 import vehicle_link
 import link_c
+import task4
+from task_reports import publish_incident_ack, publish_readiness_report
 
 
 # ============================================================
@@ -219,6 +221,31 @@ declared_geofence = None
 
 # Task 4 commands accepted in the current run (keep-out zones, moving object...).
 task4_state = link_c.Task4State(rx_common_pb2)
+
+# The MQTT client, for operator actions that arrive on link C's threads.
+mqtt_client = None
+
+# Task 4 responses (task4.py): automatic IncidentAcks, the operator's ReadinessReport.
+task4_responder = task4.Task4Responder(
+    task4_state,
+    vehicle_for_type=lambda vehicle_type: {"USV": config.USV_ID, "UAV": config.UAV_ID}.get(vehicle_type),
+    publish_ack=publish_incident_ack,
+    publish_ready=publish_readiness_report,
+    output=lambda text, level="info": output(text, level),
+)
+
+
+def link_c_report_ready(body, by="operator"):
+    """Link C action POST /task4/ready {command_seq}: the operator reports the vehicle at the
+    assistance point. Returns (http_status, json)."""
+    try:
+        command_seq = int(body.get("command_seq"))
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "detail": "command_seq must be an integer"}
+    output(f"[COMMAND] {by}: report readiness for AssistanceRequest seq={command_seq}")
+    ok, detail, report_seq = task4_responder.report_ready(mqtt_client, command_seq, by)
+    link_c_notify()
+    return (200 if ok else 409), {"ok": ok, "detail": detail, "report_seq": report_seq}
 
 
 def link_c_notify():
@@ -1383,10 +1410,15 @@ def process_command(
 
         link_c_notify()
 
+        # Same in real and local test mode: automatic IncidentAcks (task4.py). This replaces
+        # simulation/task4_responses.py, which answered ReadinessConfirm with a ReadinessReport
+        # and acked MovingObjectAlert, both against the handbook's chains.
+        task4_responder.on_command(client, command, command_type)
+        link_c_notify()
 
-        if config.LOCAL_TEST_MODE:
-            from simulation.task4_responses import respond as sim_task4_respond
-            sim_task4_respond(client, command, command_type, run_id, output)
+        # Local test mode has no operator: report readiness a moment after the ack.
+        if command_type == "assistance_request" and config.AUTO_TASK4_RESPONSES:
+            threading.Timer(3.0, link_c_report_ready, args=({"command_seq": command.seq}, "local test, automatic")).start()
 
 
         return
@@ -1465,7 +1497,8 @@ def start_link_c():
     global link_c_server
     try:
         server = link_c.LinkCServer(config.LINK_C_HOST, config.LINK_C_PORT,
-                                    config.LINK_C_ALLOWED_ORIGINS, link_c_snapshot)
+                                    config.LINK_C_ALLOWED_ORIGINS, link_c_snapshot,
+                                    actions={"/task4/ready": link_c_report_ready})
         server.start()
     except OSError as error:
         output(f"[ERROR] Link C (operator display) not started on {config.LINK_C_HOST}:{config.LINK_C_PORT}: {error}", "error")
@@ -2271,6 +2304,9 @@ def main():
     client = (
         build_mqtt_client()
     )
+
+    global mqtt_client
+    mqtt_client = client
 
 
     if not connect_with_retry(

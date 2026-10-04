@@ -32,6 +32,15 @@
     <None Include="$(MpDir)/x64/*" CopyToOutputDirectory="PreserveNewest" Link="x64/%(Filename)%(Extension)" Visible="false" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="OcsBackend.Tests" />
+  </ItemGroup>
+
+  <!-- Link B server: Kestrel (WebSocket + the frontend's static files). Shared framework, no package. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="log4net" Version="3.5.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="System.IO.Ports" Version="10.0.12" />

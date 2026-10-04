@@ -1,9 +1,11 @@
 // Vehicle backend entry point.
 // No arguments: Phase A, the .NET 10 check without hardware. Load the MP DLLs and construct the
 // objects the backend will use.
-// `--vehicle NAME=PORT[@BAUD][#SYSID]` (repeatable): logic 8 bench run. Connects each vehicle,
-// prints link state changes, battery params, vehicle messages and, once a second, the link
-// state and roll/pitch/yaw.
+// `--vehicle NAME=PORT[@BAUD][#SYSID]` (repeatable): connects each vehicle (logic 8), serves
+// link B and the frontend (LinkBServer), and prints link state changes, battery params, vehicle
+// messages and, once a second, the link state and roll/pitch/yaw.
+// `--http URL` link B address (default http://127.0.0.1:5080). `--web DIR` the built frontend
+// (default: frontend/dist found upwards; `--web none` serves link B only).
 // Example: dotnet run -- --vehicle USV1=/dev/ttyACM0@115200#1
 using System.Reflection;
 using MissionPlanner;
@@ -44,14 +46,26 @@ public static class Program
         mav.Dispose();
 
         var vehicles = new List<VehicleLinkConfig>();
-        for (var i = 0; i < args.Length; i++)
+        var url = LinkBServer.DefaultUrl;
+        var web = LinkBServer.FindFrontend();
+        for (var i = 0; i < args.Length; i += 2)
         {
-            if (args[i] != "--vehicle" || i + 1 >= args.Length || ParseVehicle(args[++i]) is not { } config)
+            var value = i + 1 < args.Length ? args[i + 1] : null;
+            switch (args[i])
             {
-                Console.Error.WriteLine("Usage: OcsBackend [--vehicle NAME=PORT[@BAUD][#SYSID]]...");
-                return 2;
+                case "--vehicle" when value != null && ParseVehicle(value) is { } config:
+                    vehicles.Add(config);
+                    break;
+                case "--http" when value != null:
+                    url = value;
+                    break;
+                case "--web" when value != null:
+                    web = value == "none" ? null : Path.GetFullPath(value);
+                    break;
+                default:
+                    Console.Error.WriteLine("Usage: OcsBackend [--vehicle NAME=PORT[@BAUD][#SYSID]]... [--http URL] [--web DIR|none]");
+                    return 2;
             }
-            vehicles.Add(config);
         }
 
         if (vehicles.Count == 0)
@@ -59,7 +73,7 @@ public static class Program
             Console.WriteLine("Phase A: .NET 10 load check passed (no hardware).");
             return 0;
         }
-        return RunVehicles(vehicles);
+        return RunVehicles(vehicles, url, web);
     }
 
     // NAME=PORT[@BAUD][#SYSID], e.g. USV1=/dev/ttyUSB0@57600#1
@@ -93,12 +107,24 @@ public static class Program
         return rest.Length == 0 ? null : new VehicleLinkConfig(name, rest, baud, sysid);
     }
 
-    private static int RunVehicles(List<VehicleLinkConfig> configs)
+    private static int RunVehicles(List<VehicleLinkConfig> configs, string url, string? web)
     {
         using var stop = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 
         var links = configs.Select(c => new VehicleLink(c)).ToList();
+        using var hub = new LinkBHub(links);
+        var app = LinkBServer.Build(hub, url, web, stop.Token);
+        try { app.StartAsync().GetAwaiter().GetResult(); }
+        catch (IOException e)
+        {
+            Console.Error.WriteLine($"Link B: cannot listen on {url}: {e.Message} (another backend running?)");
+            return 3;
+        }
+        // Kestrel's host takes over SIGINT/SIGTERM: stop everything when it stops.
+        app.Lifetime.ApplicationStopping.Register(stop.Cancel);
+        Console.WriteLine($"Link B: ws{url[4..]}{LinkBServer.Path}"
+                          + (web != null ? $"; frontend {url}/ from {web}" : "; no frontend served (not built?)"));
         var threads = links.Select(link =>
         {
             link.StateChanged += (l, s) =>
@@ -129,6 +155,7 @@ public static class Program
             }
         }
 
+        app.StopAsync().GetAwaiter().GetResult();
         foreach (var t in threads)
             t.Join(TimeSpan.FromSeconds(5));
         return 0;

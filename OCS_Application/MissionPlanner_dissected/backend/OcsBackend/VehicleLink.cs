@@ -101,6 +101,10 @@ public sealed class VehicleLink : IDisposable
     /// </summary>
     public event Action<VehicleLink, StatusText>? StatusTextReceived;
 
+    /// <summary>Every packet from the vehicle, raised inside readPacket on the link thread (link B
+    /// takes ATTITUDE from here). Handlers must be quick and must not throw.</summary>
+    public event Action<VehicleLink, MAVLink.MAVLinkMessage>? PacketReceived;
+
     /// <summary>The five battery parameters (logic 6), on connect and on every change.</summary>
     public event Action<VehicleLink, IReadOnlyDictionary<string, float>>? ParamsChanged;
 
@@ -225,6 +229,7 @@ public sealed class VehicleLink : IDisposable
         try
         {
             batt.OnPacket(msg);
+            PacketReceived?.Invoke(this, msg);
             // Autopilot only, like MP (its cs.messages are per sysid/compid). One packet, one entry:
             // ArduPilot's texts fit in one packet, so MAVLink 2 chunking (id/chunk_seq) is not joined.
             if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.STATUSTEXT && msg.sysid == sysid && msg.compid == compid)

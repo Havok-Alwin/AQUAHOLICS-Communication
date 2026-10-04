@@ -21,7 +21,9 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
   hardware (`dotnet run` in `backend/OcsBackend`). Logic 3 (stream rates, Phase B) is built:
   `StreamRates.cs`, tested in `backend/OcsBackend.Tests` (`dotnet test`, xunit, fake serial port).
   Logic 8 is built: `VehicleLink.cs` (connect, read loop, link-lost, reconnect, STATUSTEXT and
-  battery-param events), run by `Program.cs --vehicle ...`. No link A/B transport yet.
+  battery-param events), run by `Program.cs --vehicle ...`. Link B phase 1 (backend) is built:
+  `LinkBMessages.cs`, `LinkBHub.cs`, `LinkBServer.cs` (Kestrel on `http://127.0.0.1:5080`: WebSocket
+  `/linkb` + `frontend/dist`). The frontend has no link B client yet (phase 2). No link A yet.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
   all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. There is no link B/C transport yet.
   In mock mode, `src/lib/mock.ts` feeds link B messages, and that file is excluded from production
@@ -30,13 +32,17 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 ## Next step
 
-Review logic 8 phase 2 (logic 3 is committed; its row still says "review"). All frontend logic items are done. Remaining work:
+Review link B phase 1 (logic 3 and 8 are committed; their rows still say "review"). All frontend logic items are done. Remaining work:
 - Frontend, not in the logic table: the map (Leaflet, local base layer, Task 4 keep-out areas and the
   moving object, using the cadence in `pacing.ts`); the RoboCommand panel (link C); the transport
   clients (link B WebSocket, link C SSE) that call `handleLinkB` and set the Sources connected.
-- Backend, not in the logic table: the link B server (Kestrel WebSocket + static frontend files):
-  serialize FAST/SLOW from `CurrentState`, send SLOW only while LIVE, forward `ParamsChanged` and
-  `StatusTextReceived`, keep only the latest SLOW per client. Then link A to `../main.py`.
+- Link B phase 2 (frontend): a WebSocket client (`lib/linkB.ts`) that calls `handleLinkB`, sets
+  `vehicleBackend`/`vehicles` connected, reconnects with backoff, and in dev (Vite :5173) targets
+  `ws://127.0.0.1:5080/linkb` (production: same origin). Frontend changes it needs: a `backend`
+  message type in `LinkBMsg` (mark `vehicleBackend` live from it, not from SLOW, and show each
+  vehicle's link state and error); use `msg.t` instead of `Date.now()` for statustext log entries,
+  because a new client gets the history replayed.
+- Then link A to `../main.py`.
 - Backend logic item 9 (commands), which needs link B for the frontend to send them.
 - Bench: `dotnet run -- --vehicle USV1=<port>@<baud>#<sysid>` against the real Pixhawk (USB, then
   radio) is the .NET 10 hardware check.
@@ -137,13 +143,32 @@ Backend requirements found in the IL (for when the vehicle backend is designed):
 - **Never call `MainV2.ChangeUnits`-style code: keep `CurrentState.multiplierspeed/alt/dist` at 1.**
   They are static (process-wide), so any change would also corrupt the link A heartbeat to
   RoboCommand. Assert this at startup. Unit conversion is display-only, in the frontend.
-- **Per-client push to the frontend must not queue.** Like MP's pending-update skip, keep only the
+- **Per-client push to the frontend must not queue.** (done: `LinkBHub.Client`) Like MP's pending-update skip, keep only the
   latest SLOW snapshot per vehicle per client, and drop older ones if the socket is slow. The
   frontend gate (`gate.ts`) protects the UI, but it cannot stop a backlog building in the socket.
 - Core DLLs (`MissionPlanner.ArduPilot`, `Comms`, `MAVLink`, `Utilities`, `Interfaces`) target
   .NET Standard 2.0, so they can run on Mono or modern .NET. Their transitive dependencies are not
   yet checked on modern .NET.
 - With `MAV_DATA_STREAM.ALL @ 4 Hz` the display can never exceed 4 real updates/s.
+
+## Link B (built, backend side)
+
+Messages, backend -> frontend, JSON text frames, `t` = backend Unix ms (`LinkBMessages.cs`):
+
+| ch | When | Content |
+|---|---|---|
+| `att` | every ATTITUDE whose value changed | `r p y`, degrees, yaw 0..360 (CurrentState's conversion) |
+| `status` | 2 Hz, only while the link is LIVE | `cs`: the `currentState.ts` fields by name; NaN/inf/unreadable left out |
+| `params` | on connect, on change | the 5 `BATT_*` params |
+| `statustext` | every autopilot STATUSTEXT | `t severity text` |
+| `backend` | 1 Hz and on every link change | `links: {USV1: {state: closed/connecting/live/lost, error}}` |
+
+Per client (`LinkBHub.Client`): latest-wins per vehicle for att/status/params, the STATUSTEXT log
+queued in order and never coalesced (a client 5000 entries behind is disconnected). A new client
+first gets the link states, params, last attitude and the last 1000 STATUSTEXTs per vehicle. A test
+checks `SlowFields` against `currentState.ts`. **Before logic 9 (commands):** the WebSocket accepts
+any Origin today (read-only, localhost only). Check `Origin` before accepting commands, or any page
+open in the kiosk browser could send them.
 
 ## Tech stack
 

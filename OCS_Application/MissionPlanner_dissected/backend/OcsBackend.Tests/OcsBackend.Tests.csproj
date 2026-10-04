@@ -21,6 +21,7 @@
     <ProjectReference Include="../OcsBackend/OcsBackend.csproj" />
     <Reference Include="MissionPlanner.ArduPilot" HintPath="$(MpDir)/MissionPlanner.ArduPilot.dll" />
     <Reference Include="MissionPlanner.Comms" HintPath="$(MpDir)/MissionPlanner.Comms.dll" />
+    <Reference Include="MissionPlanner.Utilities" HintPath="$(MpDir)/MissionPlanner.Utilities.dll" />
     <Reference Include="MAVLink" HintPath="$(MpDir)/MAVLink.dll" />
     <Reference Include="Interfaces" HintPath="$(MpDir)/Interfaces.dll" />
   </ItemGroup>

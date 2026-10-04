@@ -18,7 +18,9 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 - `backend/`: MP DLLs, `Bridge.cs` (throwaway Mono test, not the base) and `OcsBackend/`, the real
   vehicle backend (.NET 10 console project). Phase A is done: the MP DLLs load on .NET 10 without
-  hardware (`dotnet run` in `backend/OcsBackend`). Logic 3 (stream rates) is Phase B, next.
+  hardware (`dotnet run` in `backend/OcsBackend`). Logic 3 (stream rates, Phase B) is built:
+  `StreamRates.cs`, tested in `backend/OcsBackend.Tests` (`dotnet test`, xunit, fake serial port).
+  There is no connect loop yet (logic 8), so nothing calls `StreamRates.Tick()` outside the tests.
 - `frontend/`: Svelte 5 + TS + Vite. The shell (layout, source/staleness model, mock-mode banner) and
   all frontend logic items (0, 1, 2, 5, 6, 7, 10, 11) are done. There is no link B/C transport yet.
   In mock mode, `src/lib/mock.ts` feeds link B messages, and that file is excluded from production
@@ -27,12 +29,14 @@ Pixhawk (ArduPilot) --radio/MAVLink--> backend (MP DLLs, .NET 10)
 
 ## Next step
 
-Review logic 11. All frontend logic items are done. Remaining work:
+Review logic 3. All frontend logic items are done. Remaining work:
 - Frontend, not in the logic table: the map (Leaflet, local base layer, Task 4 keep-out areas and the
   moving object, using the cadence in `pacing.ts`); the RoboCommand panel (link C); the transport
   clients (link B WebSocket, link C SSE) that call `handleLinkB` and set the Sources connected.
-- Backend logic items, built with the backend: 3 (stream rates), 8 (connect/link-lost),
-  9 (commands). See "Backend requirements found in the IL".
+- Backend logic items, built with the backend: 8 (connect/link-lost; it calls
+  `StreamRates.Tick()` and `cs.UpdateCurrentSettings` from its loop), 9 (commands). See "Backend
+  requirements found in the IL".
+- Logic 4 is covered by logic 0 (rAF frame clock instead of invalidate-on-change). Close it on review.
 
 The .NET 10 check (a small console app that loads `backend/MissionPlanner.ArduPilot.dll`, connects
 to the Pixhawk on USB and prints roll/pitch/yaw) is deferred to test-bench time. Mono is the fallback only if it fails.
@@ -84,7 +88,7 @@ Port the logic, not the WinForms code. Status: `todo` / `done`.
 | 0 | Rendering pipeline (our own, tested in `~/Test_frontend`) | not MP | Per-stream rates instead of `ALL @ 4 Hz`; fast channel (roll/pitch/yaw, pushed on change, ~20 Hz) vs slow channel (status, 2 Hz); draw on a fixed frame clock (`requestAnimationFrame`), extrapolate with velocity from the last two samples, light 15 ms ease. Simulation at 20 Hz: RMS error 1.4 deg -> 0.7 deg, biggest frame jump 4.7 -> 1.8 deg. At 4 Hz no smoothing helps, so the data rate is the real fix. Frontend: `frameClock.ts`, `attitude.ts`, `telemetry.ts` (FAST/SLOW message types), `Hud.svelte`. Liveness comes from SLOW, because FAST is sent on change only. Backend side (per-stream rates) is logic 3 | done |
 | 1 | Binding map | `FlightData.InitializeComponent` (72 `Binding`s) | HUD field <- `CurrentState` field, e.g. heading<-yaw, status<-armed, message<-messageHigh, gpsfix<-gpsstatus, batterylevel<-battery_voltage, navroll<-nav_roll, targetheading<-nav_bearing, disttowp<-wp_dist, groundalt<-HomeAlt, plus ekfstatus, prearmstatus, failsafe, linkqualitygcs, vibex/y/z. The 72 bindings are 70 fixed in `InitializeComponent` plus 2 user-configurable QuickViews; all 6 BindingSources point at `CurrentState`. Ported subset with reasons for each exclusion: `bindings.ts`. Field names and types from the ArduPilot DLL IL: `currentState.ts`. The SLOW message carries `cs: Partial<CurrentStateFields>` and replaces the snapshot, never merges it | done |
 | 2 | Update gate | `CurrentState.UpdateCurrentSettings`, `FlightData.updateBindingSource` | **Corrected from the IL:** the 50 ms gate in `UpdateCurrentSettings` covers only housekeeping; the UI-push callback runs every call. The real UI gate is `FlightData.updateBindingSource`: at most every 100 ms, it skips while a previous UI update is still pending (5 s watchdog), and it only pushes bindings for the visible tab. Frontend: `gate.ts` (100 ms, keeps the latest value, `cancel()`) applied to SLOW snapshots in `telemetry.ts`. Freshness (`markUpdate`) is not gated. Backend requirements: see "Backend requirements found in the IL" | done |
-| 3 | Stream-rate setup | `MAVLinkInterface.requestDatastream`; `cs.rateattitude/rateposition/ratestatus/ratesensors/raterc` (defaults 4/2/2/2) | Requests each MAVLink message group at its own rate. **MP (decompiled):** REQUEST_DATA_STREAM (msg 66) sent twice; skipped if the group's marker message already arrives at the rate, within (hz−1, hz+0.1] over the last 2 s (markers: SYS_STATUS, ATTITUDE, VFR_HUD, AHRS, GLOBAL_POSITION_INT, RC_CHANNELS_RAW, RAW_IMU); `hz = -1` means skip. MP's 8 s re-request sends EXTRA2 at the *attitude* rate. **Decided 2026-10-04:** MP method through the DLL, our own 8 s / 30 s re-request (so EXTRA2 keeps its rate); start rates EXTRA1 20, EXTENDED_STATUS 2, POSITION 2, EXTRA2 2, EXTRA3 2, RAW_SENSORS 0, RC_CHANNELS 0 (tune on the bench once the radio data rate is known); test against a fake serial port that captures our packets (no SITL) | todo (Phase A done) |
+| 3 | Stream-rate setup | `MAVLinkInterface.requestDatastream`; `cs.rateattitude/rateposition/ratestatus/ratesensors/raterc` (defaults 4/2/2/2) | Requests each MAVLink message group at its own rate. **MP (decompiled):** REQUEST_DATA_STREAM (msg 66) sent twice; skipped if the group's marker message already arrives at the rate, within (hz−1, hz+0.1] over the last 2 s (markers: SYS_STATUS, ATTITUDE, VFR_HUD, AHRS, GLOBAL_POSITION_INT, RC_CHANNELS_RAW, RAW_IMU); `hz = -1` means skip. MP's built-in re-request (every 38 s, see "Backend requirements") sends EXTRA2 at the *attitude* rate. **Decided 2026-10-04:** MP method through the DLL, our own 8 s / 30 s re-request (so EXTRA2 keeps its rate); start rates EXTRA1 20, EXTENDED_STATUS 2, POSITION 2, EXTRA2 2, EXTRA3 2, RAW_SENSORS 0, RC_CHANNELS 0 (tune on the bench once the radio data rate is known); test against a fake serial port that captures our packets (no SITL). **Built:** `StreamRates.cs`. MP's built-in re-request is switched off by setting the static `CurrentState.rate*backup` to -1 before any `MAVLinkInterface` exists (every `CurrentState` copies them in its constructor; `requestDatastream` and `CameraProtocol.RequestMessageIntervals` skip -1); `Program.cs` asserts it. `Tick()`: first call with an open port and a known sysid requests every group through MP's `requestDatastream` (so MP's per-group skip applies); then a re-request once any group has been off its rate (MP's own test, ported from the private `hzratecheck`) for 8 s, at most every 30 s. Rate 0 stops a group only if it is arriving. 8 tests in `OcsBackend.Tests/StreamRatesTests.cs` parse the REQUEST_DATA_STREAM bytes MP writes | done (review) |
 | 4 | Invalidate on change | `HUD.set_roll` -> `Invalidate()` | MP's HUD is event-driven, not timer-driven (item 0 improves on this) | todo |
 | 5 | HUD geometry | `HUD.doPaint` | Pitch-ladder px/deg, ticks, heading tape, aircraft symbol, colours. Ported from the decompiled source (`ilspycmd`, see Reference material) in `hudDraw.ts`. It is a pure draw function and every size scales with the canvas as in MP. The status-line items (battery, GPS, link bars, clock, vibe, EKF, pre-arm, CPU) are not drawn on the HUD because the vehicle card shows them. For the USV, the altitude tape and AS line are off. Deviations, each with its reason in the file header: heading-tape target off the right edge (fixes an MP bug), wrap-aware off-tape check, dark heading readout, and the stacked ARMED/DISARMED/SAFE/FAILSAFE texts (MP's overlap). Low-speed flags await logic 6 and units await logic 10 | done |
 | 6 | Warning thresholds | `FlightData.mainloop` (battery), `HUD.doPaint` (colour rules) | When to alert the operator. Safety-relevant: ported exactly in `warnings.ts`. **Battery:** thresholds come from the vehicle's params (`BATT_LOW_VOLT`, `BATT_CRT_VOLT`, `BATT_LOW_MAH`/`BATT_CRT_MAH` ÷ `BATT_CAPACITY` × 100). Critical falls back to low. Low when voltage ≤ low volt **or** remaining < low %; critical likewise with the critical thresholds. With no params, the battery shows "limits unknown" instead of MP's compare-against-0. **Inline doPaint rules:** GPS fix 0/1 red (2D is not); EKF > 0.5 orange, > 0.8 red; any vibe axis > 30 orange, > 60 red; link 0 % red; CPU load 100 red; SAFE red; pre-arm only while disarmed. **Not ported:** `lowairspeed`/`lowgroundspeed`, which MP only ever sets false (low speed exists only as an optional speech alert). Note: `battery_remaining` -1 (unknown) counts as < % like in MP. Shown as warning chips (critical first) and the battery tile colour on the vehicle card | done |
@@ -110,9 +114,12 @@ Backend requirements found in the IL (for when the vehicle backend is designed):
   - Sets `linkqualitygcs` = `packetsnotlost / (packetsnotlost + packetslost) * 100`, capped at 100,
     and sets it to **0 if no valid packet for > 10 s**.
   - Once per second: `distTraveled`, `timeInAir`, the wind estimate.
-  - If no data for **8 s** and the port is open, **re-requests every data stream**: EXTENDED_STATUS
+  - If the port is open, **re-requests every data stream**: EXTENDED_STATUS
     and POSITION at `ratestatus`/`rateposition`, EXTRA1/EXTRA2 at `rateattitude`, EXTRA3/RAW_SENSORS
-    at `ratesensors`, RC_CHANNELS at `raterc`. After a re-request it waits 30 s before retrying.
+    at `ratesensors`, RC_CHANNELS at `raterc`. **Corrected from the decompiled source:** this is not
+    "after 8 s without data". The private `lastdata` is only set after a re-request
+    (`lastdata = now + 30 s`), never when data arrives, so MP re-requests on the first call and then
+    every 38 s. Our backend switches this off and uses `StreamRates` instead (logic 3).
 
   `~/Test_frontend` `Bridge.cs` never calls it, so the prototype's link quality never updates.
 - **Send each vehicle's battery params to the frontend** as a link B message `{ch:'params', vehicle,
@@ -147,7 +154,10 @@ Backend requirements found in the IL (for when the vehicle backend is designed):
   assemblies (first failure: `System.Configuration.ConfigurationManager` without the type, via
   log4net in `CurrentState`'s static init). `OcsBackend.csproj` excludes them and uses packages
   instead: `log4net` 3.5.0 (netstandard; 2.0.17 has advisory GHSA-4f7c-pmjv-c25w) and
-  `System.IO.Ports` 10.0.12. Add further packages only when a runtime load fails. Watch
+  `System.IO.Ports` 10.0.12. MP's `Newtonsoft.Json.dll` is a net45 build too (it throws
+  `MissingMethodException` on `SecurityPermission` when it reflects; found when the test host
+  crashed), so it is excluded and replaced by the `Newtonsoft.Json` 13.0.4 package (MP references
+  assembly version 13.0.0.0). Add further packages only when a runtime load fails. Watch
   `System.Drawing.Common`: Windows-only on .NET 6+. .NET 8
   support ends Nov 2026. First task: a check that `MissionPlanner.ArduPilot.dll` and its
   dependencies load and connect on .NET 10 on Linux. Mono is the fallback only if that fails.

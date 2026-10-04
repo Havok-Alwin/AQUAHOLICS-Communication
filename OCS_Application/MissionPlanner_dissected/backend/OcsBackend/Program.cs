@@ -20,13 +20,22 @@ public static class Program
             Console.WriteLine($"Loaded {asm.GetName().Name} {asm.GetName().Version}");
         }
 
+        // Logic 3: before any CurrentState exists, so MP's built-in re-request stays off.
+        StreamRates.DisableMpRerequest();
+
         // Construct what the backend needs. Constructors pull in most transitive dependencies.
         var mav = new MAVLinkInterface();
         var serial = new SerialPort();
         var cs = mav.MAV.cs;
         Console.WriteLine($"MAVLinkInterface OK, CurrentState OK (multiplierspeed={CurrentState.multiplierspeed}, multiplieralt={CurrentState.multiplieralt}, multiplierdist={CurrentState.multiplierdist})");
         Console.WriteLine($"SerialPort OK, ports: [{string.Join(", ", SerialPort.GetPortNames())}]");
-        Console.WriteLine($"Default rates: attitude {cs.rateattitude}, position {cs.rateposition}, status {cs.ratestatus}, sensors {cs.ratesensors}, rc {cs.raterc}");
+        if (!StreamRates.MpRerequestDisabled(cs))
+        {
+            Console.Error.WriteLine("MP's built-in stream re-request is still on (cs.rate* not -1).");
+            return 1;
+        }
+        Console.WriteLine("MP built-in stream re-request off (cs.rate* = -1). Our start rates: "
+            + string.Join(", ", StreamRates.StartRates.Select(r => $"{r.Key} {r.Value}")));
 
         _ = serial;
         Console.WriteLine("Phase A: .NET 10 load check passed (no hardware).");

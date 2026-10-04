@@ -34,9 +34,11 @@ public sealed class VehicleLinkTests : IDisposable
 
     private int PortCount { get { lock (_ports) return _ports.Count; } }
 
-    private VehicleLink Start(VehicleLinkConfig config, Func<FakeSerial>? newPort = null)
+    private VehicleLink Start(VehicleLinkConfig config, Func<FakeSerial>? newPort = null) =>
+        StartLink(new VehicleLink(config, _ => (newPort ?? (() => NewPort()))()));
+
+    private VehicleLink StartLink(VehicleLink link)
     {
-        var link = new VehicleLink(config, _ => (newPort ?? (() => NewPort()))());
         _thread = new Thread(() => link.Run(_stop.Token)) { IsBackground = true };
         _thread.Start();
         return link;
@@ -153,6 +155,89 @@ public sealed class VehicleLinkTests : IDisposable
         WaitFor(() => link.Error != null, "refusal");
         Assert.Equal("wrong vehicle on fake: sysid 1, expected 2 (radios swapped?)", link.Error);
         Holds(() => link.State != LinkState.Live, "never LIVE", seconds: 0.5);
+    }
+
+    // --- phase 2: battery params and STATUSTEXT -------------------------------------------------
+
+    private static readonly Dictionary<string, float> AllParams = new()
+    {
+        ["BATT_LOW_VOLT"] = 14.0f, ["BATT_CRT_VOLT"] = 13.2f, ["BATT_LOW_MAH"] = 2000,
+        ["BATT_CRT_MAH"] = 1000, ["BATT_CAPACITY"] = 10000,
+    };
+
+    private static List<T> Capture<T>(Action<Action<T>> subscribe)
+    {
+        var list = new List<T>();
+        subscribe(x => { lock (list) list.Add(x); });
+        return list;
+    }
+
+    private static List<T> Snapshot<T>(List<T> list) { lock (list) return list.ToList(); }
+
+    [Fact]
+    public void BatteryParamsAreSentOnceOnConnect()
+    {
+        var link = new VehicleLink(Config(), _ => NewPort());
+        var sent = Capture<IReadOnlyDictionary<string, float>>(h => link.ParamsChanged += (_, p) => h(p));
+        StartLink(link);
+
+        WaitFor(() => Snapshot(sent).Count == 1, "params");
+        Assert.Equal(AllParams, Snapshot(sent)[0]);
+        Holds(() => Snapshot(sent).Count == 1, "sent once, not per request round", seconds: 1.5);
+    }
+
+    [Fact]
+    public void ChangedBatteryParamIsSentAgain()
+    {
+        var link = new VehicleLink(Config(), _ => NewPort());
+        var sent = Capture<IReadOnlyDictionary<string, float>>(h => link.ParamsChanged += (_, p) => h(p));
+        StartLink(link);
+        WaitFor(() => Snapshot(sent).Count == 1, "params");
+
+        _vehicle.SetParam("BATT_CAPACITY", 10000);  // same value: nothing
+        _vehicle.SetParam("BATT_LOW_VOLT", 14.4f);  // e.g. set from another GCS
+
+        WaitFor(() => Snapshot(sent).Count == 2, "params after the change", seconds: 2);
+        Assert.Equal(14.4f, Snapshot(sent)[1]["BATT_LOW_VOLT"]);
+        Holds(() => Snapshot(sent).Count == 2, "no event for an unchanged value", seconds: 0.5);
+    }
+
+    [Fact]
+    public void MissingBatteryParamIsReportedWithoutItAfterRetries()
+    {
+        lock (_vehicle.Params)
+            _vehicle.Params.Remove("BATT_CRT_MAH");
+        var link = new VehicleLink(Config(), _ => NewPort());
+        var sent = Capture<IReadOnlyDictionary<string, float>>(h => link.ParamsChanged += (_, p) => h(p));
+        StartLink(link);
+
+        WaitFor(() => Snapshot(sent).Count == 1, "partial params", seconds: 15);
+        Assert.Equal(4, Snapshot(sent)[0].Count);
+        Assert.False(Snapshot(sent)[0].ContainsKey("BATT_CRT_MAH"));
+        lock (_vehicle.Params)
+            Assert.Equal(5, _vehicle.ParamRequests.Count(n => n == "BATT_CRT_MAH"));  // maxTries
+    }
+
+    [Fact]
+    public void StatusTextIsForwardedWithItsSeverity()
+    {
+        var link = new VehicleLink(Config(), _ => NewPort());
+        var texts = Capture<StatusText>(h => link.StatusTextReceived += (_, st) => h(st));
+        StartLink(link);
+        WaitFor(() => link.State == LinkState.Live, "LIVE");
+
+        var before = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _vehicle.SendStatusText(MAVLink.MAV_SEVERITY.INFO, "from a companion", compid: 191);  // not the autopilot
+        _vehicle.SendStatusText(MAVLink.MAV_SEVERITY.CRITICAL, "PreArm: Battery below minimum");
+        _vehicle.SendStatusText(MAVLink.MAV_SEVERITY.DEBUG, "debug too");
+
+        WaitFor(() => Snapshot(texts).Count >= 2, "two status texts", seconds: 2);
+        Holds(() => Snapshot(texts).Count == 2, "companion text not forwarded", seconds: 0.3);
+        var got = Snapshot(texts);
+        Assert.Equal((byte)MAVLink.MAV_SEVERITY.CRITICAL, got[0].Severity);
+        Assert.Equal("PreArm: Battery below minimum", got[0].Text);
+        Assert.Equal((byte)MAVLink.MAV_SEVERITY.DEBUG, got[1].Severity);
+        Assert.InRange(got[0].T, before, before + 2000);
     }
 
     public void Dispose()

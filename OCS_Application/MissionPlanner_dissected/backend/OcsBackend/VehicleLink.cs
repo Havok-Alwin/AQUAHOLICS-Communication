@@ -25,6 +25,8 @@
 //   every 5 s with a fresh MAVLinkInterface.
 // - Optional expected sysid per vehicle: two radios swapped between USV1 and UAV1 would otherwise
 //   show one vehicle's data under the other's name.
+// Phase 2: on connect, the battery parameters (BatteryParams, logic 6) and, from then on, every
+// STATUSTEXT (logic 7), both raised as events for link B.
 using MissionPlanner;
 using MissionPlanner.Comms;
 
@@ -41,6 +43,11 @@ public enum LinkState
     /// <summary>Connected, but the autopilot has been silent for longer than LostAfter.</summary>
     Lost,
 }
+
+/// <summary>One STATUSTEXT, as link B's {ch:'statustext', vehicle, t, severity, text}.</summary>
+/// <param name="T">Backend receive time, Unix ms.</param>
+/// <param name="Severity">MAV_SEVERITY (0 emergency .. 7 debug).</param>
+public sealed record StatusText(long T, byte Severity, string Text);
 
 public sealed record VehicleLinkConfig(string Name, string Port, int Baud = 57600, byte? ExpectedSysId = null)
 {
@@ -65,6 +72,7 @@ public sealed class VehicleLink : IDisposable
 
     private MAVLinkInterface? _mav;
     private StreamRates? _rates;
+    private BatteryParams? _params;
     private DateTime _retryAt = DateTime.MinValue;
     private DateTime _lastHeartbeatSent = DateTime.MinValue;
     private LinkState _state = LinkState.Closed;
@@ -85,6 +93,16 @@ public sealed class VehicleLink : IDisposable
 
     /// <summary>Raised on every state change, on the link's own thread.</summary>
     public event Action<VehicleLink, LinkState>? StateChanged;
+
+    /// <summary>
+    /// Every STATUSTEXT from the vehicle's autopilot, any severity, in arrival order (logic 7).
+    /// MP's cs.messages keeps the text without its severity, so the backend hooks the packet.
+    /// Raised on the link's own thread. Never drop these downstream: they are a log.
+    /// </summary>
+    public event Action<VehicleLink, StatusText>? StatusTextReceived;
+
+    /// <summary>The five battery parameters (logic 6), on connect and on every change.</summary>
+    public event Action<VehicleLink, IReadOnlyDictionary<string, float>>? ParamsChanged;
 
     /// <summary>
     /// The connected vehicle's MAVLinkInterface (its CurrentState is Mav.MAV.cs), or null.
@@ -138,6 +156,7 @@ public sealed class VehicleLink : IDisposable
         catch (Exception e) { Console.Error.WriteLine($"{Name}: UpdateCurrentSettings failed: {e.Message}"); }
 
         _rates!.Tick();
+        _params!.Tick();
         SendGcsHeartbeat(mav);
 
         var silent = DateTime.UtcNow - mav.MAV.lastvalidpacket;
@@ -186,14 +205,39 @@ public sealed class VehicleLink : IDisposable
 
         Console.WriteLine($"{Name}: connected on {_config.Port}, sysid {sysid} compid {mav.MAV.compid}, "
                           + $"type {mav.MAV.aptype}, autopilot {mav.MAV.apname}");
+        var batt = new BatteryParams(mav, sysid, mav.MAV.compid);
+        batt.Changed += p => ParamsChanged?.Invoke(this, p);
+        mav.OnPacketReceived += (_, msg) => OnPacket(msg, sysid, mav.MAV.compid, batt);
         lock (_lock)
         {
             _mav = mav;
             _rates = new StreamRates(mav);
+            _params = batt;
         }
         _lastHeartbeatSent = DateTime.MinValue;
         Error = null;
         SetState(LinkState.Live);
+    }
+
+    // Runs inside mav.readPacket(), on the link thread.
+    private void OnPacket(MAVLink.MAVLinkMessage msg, byte sysid, byte compid, BatteryParams batt)
+    {
+        try
+        {
+            batt.OnPacket(msg);
+            // Autopilot only, like MP (its cs.messages are per sysid/compid). One packet, one entry:
+            // ArduPilot's texts fit in one packet, so MAVLink 2 chunking (id/chunk_seq) is not joined.
+            if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.STATUSTEXT && msg.sysid == sysid && msg.compid == compid)
+            {
+                var st = msg.ToStructure<MAVLink.mavlink_statustext_t>();
+                StatusTextReceived?.Invoke(this, new StatusText(
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), st.severity, BatteryParams.CString(st.text)));
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"{Name}: packet handler failed: {e.Message}");
+        }
     }
 
     private void SendGcsHeartbeat(MAVLinkInterface mav)
@@ -229,6 +273,7 @@ public sealed class VehicleLink : IDisposable
             old = _mav;
             _mav = null;
             _rates = null;
+            _params = null;
         }
         try { old?.Dispose(); } catch { /* closing a dead port */ }
         SetState(LinkState.Closed);

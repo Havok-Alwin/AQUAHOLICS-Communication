@@ -18,6 +18,9 @@ public sealed class FakeSerial : ICommsSerial
     /// <summary>Open() throws, like a missing device.</summary>
     public bool FailOpen { get; set; }
 
+    /// <summary>Called with each Write (MP writes one whole packet per call), outside the lock.</summary>
+    public Action<byte[]>? OnWrite { get; set; }
+
     /// <summary>Simulates the device going away (e.g. USB unplugged): the port reports closed.</summary>
     public void Unplug() => _isOpen = false;
 
@@ -57,6 +60,7 @@ public sealed class FakeSerial : ICommsSerial
     {
         lock (_lock)
             _written.Write(buffer, offset, count);
+        OnWrite?.Invoke(buffer[offset..(offset + count)]);
     }
 
     public void Write(string text) => throw new NotSupportedException();

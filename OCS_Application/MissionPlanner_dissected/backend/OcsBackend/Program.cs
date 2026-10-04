@@ -2,7 +2,8 @@
 // No arguments: Phase A, the .NET 10 check without hardware. Load the MP DLLs and construct the
 // objects the backend will use.
 // `--vehicle NAME=PORT[@BAUD][#SYSID]` (repeatable): logic 8 bench run. Connects each vehicle,
-// prints link state changes and, once a second, the link state and roll/pitch/yaw.
+// prints link state changes, battery params, vehicle messages and, once a second, the link
+// state and roll/pitch/yaw.
 // Example: dotnet run -- --vehicle USV1=/dev/ttyACM0@115200#1
 using System.Reflection;
 using MissionPlanner;
@@ -102,6 +103,11 @@ public static class Program
         {
             link.StateChanged += (l, s) =>
                 Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {l.Name}: {s}{(l.Error is { } e ? $" ({e})" : "")}");
+            link.ParamsChanged += (l, p) =>
+                Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {l.Name}: params "
+                                  + string.Join(", ", p.Select(kv => $"{kv.Key}={kv.Value}")));
+            link.StatusTextReceived += (l, st) =>
+                Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {l.Name}: [{(MAVLink.MAV_SEVERITY)st.Severity}] {st.Text}");
             var t = new Thread(() => link.Run(stop.Token)) { Name = link.Name, IsBackground = true };
             t.Start();
             return t;

@@ -4,16 +4,28 @@
   import MapPanel from './components/MapPanel.svelte';
   import RoboCommandPanel from './components/RoboCommandPanel.svelte';
   import TopBar from './components/TopBar.svelte';
+  import PlannerView from './components/PlannerView.svelte';
   import VehicleStatus from './components/VehicleStatus.svelte';
   import { VEHICLES, type VehicleId } from './lib/config';
   import { ocs, vehicles } from './lib/sources';
 
   let hudVehicle: VehicleId = $state(VEHICLES[0]);
+  let view: 'dashboard' | 'planner' = $state('dashboard');
+  // The planner is mounted on first use and then only hidden, so the plan survives switching back.
+  let plannerOpened = $state(false);
+  $effect(() => {
+    if (view === 'planner') plannerOpened = true;
+  });
 </script>
 
 <div class="app">
-  <TopBar />
-  <main class="grid">
+  <TopBar bind:view />
+  {#if plannerOpened}
+    <div class="planner-host" hidden={view !== 'planner'}>
+      <PlannerView />
+    </div>
+  {/if}
+  <main class="grid" hidden={view !== 'dashboard'}>
     <div class="vehicles">
       {#each VEHICLES as id (id)}
         <Panel title={id} source={vehicles[id]}>
@@ -54,6 +66,16 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+  }
+  .planner-host {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .planner-host[hidden],
+  .grid[hidden] {
+    display: none;
   }
   .grid {
     flex: 1;

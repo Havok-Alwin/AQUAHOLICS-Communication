@@ -1,0 +1,45 @@
+{
+  "note": "Planner map types. Online ones need Internet and are off the course network; the OCS display itself never loads them. Google and Bing are the same tile servers Mission Planner's GMap.NET uses (no key, unofficial, may be rate-limited). {z}/{x}/{y} tile numbers, {q} Bing quadkey, {s} one of 'subdomains'. geocoder: place-name lookup for 'Go to' (logic 12, MP uses OpenStreetMap's geocoder too); online only, coordinates work without it. places: Go-to shortcuts {name: [lat, lng]}, work offline; RMK is built in (planner default view).",
+  "sources": [
+    {
+      "name": "Google satellite (online)",
+      "tiles": "https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+      "subdomains": "0123",
+      "maxZoom": 22,
+      "maxNativeZoom": 21
+    },
+    {
+      "name": "Google hybrid (online)",
+      "tiles": "https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+      "subdomains": "0123",
+      "maxZoom": 22,
+      "maxNativeZoom": 21
+    },
+    {
+      "name": "Bing satellite (online)",
+      "tiles": "https://ecn.t{s}.tiles.virtualearth.net/tiles/a{q}.jpeg?g=1",
+      "subdomains": "0123",
+      "maxZoom": 22,
+      "maxNativeZoom": 19
+    },
+    {
+      "name": "Esri satellite (online)",
+      "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      "maxZoom": 22,
+      "maxNativeZoom": 19
+    },
+    {
+      "name": "OpenStreetMap (online)",
+      "tiles": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      "maxZoom": 22,
+      "maxNativeZoom": 19
+    }
+  ],
+  "geocoder": "https://nominatim.openstreetmap.org/search?format=json&limit=1&q={q}",
+  "places": {
+    "RMK": [
+      13.3568164,
+      80.1422648
+    ]
+  }
+}

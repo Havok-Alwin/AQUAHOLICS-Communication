@@ -3,6 +3,8 @@
   import { ocs, vehicleBackend } from '../lib/sources';
   import SourceBadge from './SourceBadge.svelte';
   import UnitsSelect from './UnitsSelect.svelte';
+
+  let { view = $bindable('dashboard') }: { view?: 'dashboard' | 'planner' } = $props();
 </script>
 
 {#if MOCK}
@@ -10,6 +12,9 @@
 {/if}
 <div class="topbar">
   <strong class="title">AQUAHOLICS OCS</strong>
+  <button class="view" onclick={() => (view = view === 'planner' ? 'dashboard' : 'planner')}>
+    {view === 'planner' ? '← Dashboard' : 'Mission planner'}
+  </button>
   <span class="mode {MOCK ? 'is-mock' : 'is-real'}">{MOCK ? 'MOCK MODE' : 'REAL MODE'}</span>
   <span class="spacer"></span>
   <UnitsSelect />
@@ -51,6 +56,16 @@
   .is-real {
     border: 1px solid var(--muted);
     color: var(--muted);
+  }
+  .view {
+    font: inherit;
+    font-size: 0.8rem;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--connecting);
+    border-radius: 4px;
+    padding: 0.1rem 0.6rem;
+    cursor: pointer;
   }
   .spacer {
     flex: 1;

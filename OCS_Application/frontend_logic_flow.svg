@@ -1,0 +1,272 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1200" width="1800" height="1200" font-family="'Trebuchet MS','Segoe UI',Verdana,sans-serif">
+<title>Operator display - how logics 0 to 11 connect the backends to the screen</title>
+<defs>
+ <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#58a6ff"/></marker>
+ <marker id="gr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+ <marker id="o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e0a64a"/></marker>
+ <marker id="w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c9d1d9"/></marker>
+ <marker id="p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d2a8ff"/></marker>
+ <style>
+  .t{fill:#e6edf3;font-size:15px;font-weight:bold}
+  .s{fill:#8b949e;font-size:11.5px}
+  .f{fill:#6e7681;font-size:10.5px;font-style:italic}
+  .hdr{fill:#e6edf3;font-size:16px;font-weight:bold}
+  .lg{fill:#161b22;stroke:#d2a8ff;stroke-width:2}
+  .pill{stroke-width:1.5}
+  .eb{fill:none;stroke:#58a6ff;stroke-width:2}
+  .eg{fill:none;stroke:#3fb950;stroke-width:2}
+  .ep{fill:none;stroke:#d2a8ff;stroke-width:2}
+  .ed{fill:none;stroke:#8b949e;stroke-width:1.5;stroke-dasharray:3 4}
+ </style>
+</defs>
+<rect width="1800" height="1200" fill="#0d1117"/>
+<text x="900" y="32" text-anchor="middle" fill="#e6edf3" font-size="21" font-weight="bold">Operator display: how logics 0–11 turn backend data into what the operator sees</text>
+<text x="900" y="56" text-anchor="middle" fill="#8b949e" font-size="13">Read left to right: where the data comes from → the message that carries it → the logic that shapes it → the panel that shows it.</text>
+
+<!-- column headers -->
+<g class="hdr" text-anchor="middle">
+ <text x="185" y="96">1. Where data comes from</text>
+ <text x="570" y="96">2. Messages</text>
+ <text x="1035" y="96">3. Frontend logic (numbers = CLAUDE.md table)</text>
+ <text x="1560" y="96">4. What the operator sees</text>
+</g>
+<line x1="20" y1="108" x2="1780" y2="108" stroke="#30363d"/>
+
+<!-- ================= column 1: sources ================= -->
+<rect x="30" y="124" width="310" height="52" rx="8" fill="#0d1117" stroke="#c9d1d9" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="185" y="148" text-anchor="middle" class="t">Pixhawk (ArduPilot)</text><text x="185" y="166" text-anchor="middle" class="s">USV1 · UAV1 · USB or telemetry radio</text>
+<line x1="185" y1="176" x2="185" y2="200" stroke="#c9d1d9" stroke-width="2" marker-end="url(#w)" marker-start="url(#w)"/>
+
+<rect x="30" y="202" width="310" height="390" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="2.5"/>
+<text x="185" y="228" text-anchor="middle" class="t">Vehicle backend (C#)</text>
+<text x="185" y="246" text-anchor="middle" class="s">Mission Planner DLL: MAVLinkInterface + CurrentState</text>
+<g font-size="12.5" fill="#e6edf3">
+ <text x="48" y="282"><tspan fill="#58a6ff" font-weight="bold">③ Stream rates</tspan></text>
+ <text x="48" y="299" class="s">asks the vehicle for attitude 20 Hz,</text>
+ <text x="48" y="314" class="s">status groups 2 Hz</text>
+ <text x="48" y="342"><tspan fill="#58a6ff" font-weight="bold">⑧ Connect / link-lost</tspan></text>
+ <text x="48" y="359" class="s">Connect from the card · LIVE · LOST · OFF</text>
+ <text x="48" y="374" class="s">status sent only while LIVE</text>
+ <text x="48" y="402"><tspan fill="#58a6ff" font-weight="bold">⑨ Commands (executes)</tspan></text>
+ <text x="48" y="419" class="s">arm · disarm · mode → COMMAND_LONG, waits ack</text>
+ <text x="48" y="447"><tspan fill="#58a6ff" font-weight="bold">⑥ Battery limits</tspan></text>
+ <text x="48" y="464" class="s">fetches the 5 BATT_* parameters</text>
+ <text x="48" y="492"><tspan fill="#58a6ff" font-weight="bold">⑦ Vehicle messages</tspan></text>
+ <text x="48" y="509" class="s">every STATUSTEXT, with its severity</text>
+ <text x="48" y="537"><tspan fill="#58a6ff" font-weight="bold">⑩ Units stay SI</tspan></text>
+ <text x="48" y="554" class="s">m, m/s (refuses to start otherwise);</text>
+ <text x="48" y="569" class="s">converting is the display's job</text>
+</g>
+
+<rect x="110" y="742" width="230" height="52" rx="8" fill="#0d1117" stroke="#c9d1d9" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="225" y="766" text-anchor="middle" class="t">RoboCommand</text><text x="225" y="784" text-anchor="middle" class="s">competition server · MQTT</text>
+<line x1="225" y1="794" x2="225" y2="818" stroke="#c9d1d9" stroke-width="2" marker-end="url(#w)" marker-start="url(#w)"/>
+
+<rect x="30" y="820" width="310" height="200" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="2.5"/>
+<text x="185" y="846" text-anchor="middle" class="t">OCS (main.py)</text>
+<text x="185" y="864" text-anchor="middle" class="s">Python · talks to RoboCommand</text>
+<g font-size="12" fill="#e6edf3">
+ <text x="48" y="892">• connection, run, preflight checklist</text>
+ <text x="48" y="914">• course boundary + UAV geofence</text>
+ <text x="48" y="936">• Task 4: keep-out zones, moving object,</text>
+ <text x="58" y="952">  automatic acks</text>
+ <text x="48" y="974">• heartbeats to RoboCommand (from link A,</text>
+ <text x="58" y="990">  same AUTO / MANUAL rules as the card)</text>
+</g>
+<path d="M60,592 L60,816" fill="none" stroke="#e0a64a" stroke-width="2.5" marker-end="url(#o)"/>
+<text x="72" y="660" fill="#e0a64a" font-size="12" font-weight="bold">link A</text>
+<text x="72" y="676" fill="#e0a64a" font-size="11">heartbeat data, 2 Hz</text>
+
+<!-- ================= column 2: messages ================= -->
+<text x="570" y="140" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="bold">link B · WebSocket /linkb</text>
+<g font-size="12.5">
+ <rect x="410" y="150" width="320" height="38" rx="19" fill="#0f2238" stroke="#58a6ff" class="pill"/>
+ <text x="430" y="174" fill="#e6edf3"><tspan font-weight="bold">att</tspan><tspan fill="#8b949e">  roll · pitch · yaw, ~20 Hz, on change</tspan></text>
+ <rect x="410" y="200" width="320" height="38" rx="19" fill="#0f2238" stroke="#58a6ff" class="pill"/>
+ <text x="430" y="224" fill="#e6edf3"><tspan font-weight="bold">status</tspan><tspan fill="#8b949e">  telemetry snapshot, 2 Hz</tspan></text>
+ <rect x="410" y="250" width="320" height="38" rx="19" fill="#0f2238" stroke="#58a6ff" class="pill"/>
+ <text x="430" y="274" fill="#e6edf3"><tspan font-weight="bold">params</tspan><tspan fill="#8b949e">  battery limits (BATT_*)</tspan></text>
+ <rect x="410" y="300" width="320" height="38" rx="19" fill="#0f2238" stroke="#58a6ff" class="pill"/>
+ <text x="430" y="324" fill="#e6edf3"><tspan font-weight="bold">statustext</tspan><tspan fill="#8b949e">  vehicle messages</tspan></text>
+ <rect x="410" y="350" width="320" height="38" rx="19" fill="#0f2238" stroke="#58a6ff" class="pill"/>
+ <text x="430" y="374" fill="#e6edf3"><tspan font-weight="bold">backend</tspan><tspan fill="#8b949e">  link state per vehicle, ports</tspan></text>
+ <rect x="410" y="400" width="320" height="38" rx="19" fill="#0f2238" stroke="#58a6ff" class="pill"/>
+ <text x="430" y="424" fill="#e6edf3"><tspan font-weight="bold">modes · cmdack</tspan><tspan fill="#8b949e">  mode list, command results</tspan></text>
+ <rect x="410" y="450" width="320" height="38" rx="19" fill="#0d1117" stroke="#58a6ff" stroke-dasharray="5 3" class="pill"/>
+ <text x="430" y="474" fill="#e6edf3"><tspan font-weight="bold">← cmd · connect</tspan><tspan fill="#8b949e">  from the operator</tspan></text>
+</g>
+
+<text x="570" y="850" text-anchor="middle" fill="#3fb950" font-size="14" font-weight="bold">link C · Server-Sent Events /linkc</text>
+<g font-size="12.5">
+ <rect x="410" y="860" width="320" height="38" rx="19" fill="#0f2a17" stroke="#3fb950" class="pill"/>
+ <text x="430" y="884" fill="#e6edf3"><tspan font-weight="bold">state</tspan><tspan fill="#8b949e">  the whole OCS picture, 1 Hz</tspan></text>
+ <rect x="410" y="910" width="320" height="38" rx="19" fill="#0f2a17" stroke="#3fb950" class="pill"/>
+ <text x="430" y="934" fill="#e6edf3"><tspan font-weight="bold">log</tspan><tspan fill="#8b949e">  command / error lines</tspan></text>
+ <rect x="410" y="960" width="320" height="38" rx="19" fill="#0d1117" stroke="#3fb950" stroke-dasharray="5 3" class="pill"/>
+ <text x="430" y="984" fill="#e6edf3"><tspan font-weight="bold">← Report ready</tspan><tspan fill="#8b949e">  Task 4 (POST)</tspan></text>
+</g>
+
+<!-- backend -> pills -->
+<g class="eb">
+ <path d="M340,215 C380,215 380,169 408,169" marker-end="url(#b)"/>
+ <path d="M340,250 C380,250 380,219 408,219" marker-end="url(#b)"/>
+ <path d="M340,455 C380,455 380,269 408,269" marker-end="url(#b)"/>
+ <path d="M340,500 C385,500 385,319 408,319" marker-end="url(#b)"/>
+ <path d="M340,355 C380,355 380,369 408,369" marker-end="url(#b)"/>
+ <path d="M340,410 C380,410 380,419 408,419" marker-end="url(#b)"/>
+ <path d="M408,469 C370,469 370,430 342,430" stroke-dasharray="5 3" marker-end="url(#b)"/>
+</g>
+<g class="eg">
+ <path d="M340,880 L408,880" marker-end="url(#gr)"/>
+ <path d="M340,929 L408,929" marker-end="url(#gr)"/>
+ <path d="M408,979 C370,979 370,960 342,960" stroke-dasharray="5 3" marker-end="url(#gr)"/>
+</g>
+
+<!-- ================= column 3: logic ================= -->
+<!-- logic box helper: x 820..1250 -->
+<g>
+ <rect x="820" y="140" width="430" height="66" rx="8" class="lg"/>
+ <text x="836" y="163" class="t">⓪ Rendering pipeline <tspan fill="#8b949e" font-size="12" font-weight="normal">(also covers ④)</tspan></text>
+ <text x="836" y="181" class="s">one frame clock; predicts between samples, 15 ms smoothing,</text>
+ <text x="836" y="197" class="f">frameClock.ts · attitude.ts</text>
+
+ <rect x="820" y="218" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="240" class="t">⑤ HUD geometry</text><text x="1000" y="240" class="s">pitch ladder, heading tape, colours</text>
+ <text x="836" y="259" class="f">hudDraw.ts (port of Mission Planner's HUD)</text>
+
+ <rect x="820" y="290" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="312" class="t">② Update gate</text><text x="975" y="312" class="s">at most 10 screen updates/s, latest wins</text>
+ <text x="836" y="331" class="f">gate.ts</text>
+
+ <rect x="820" y="362" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="384" class="t">① Binding map</text><text x="975" y="384" class="s">which telemetry field goes on which tile</text>
+ <text x="836" y="403" class="f">bindings.ts · currentState.ts · autonomy.ts (AUTO / MANUAL)</text>
+
+ <rect x="820" y="434" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="456" class="t">⑩ Units</text><text x="925" y="456" class="s">m/s ↔ kph · kts · mph · fps, m ↔ ft (display only)</text>
+ <text x="836" y="475" class="f">units.ts · UnitsSelect.svelte</text>
+
+ <rect x="820" y="506" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="528" class="t">⑥ Warning thresholds</text><text x="1028" y="528" class="s">battery, GPS, EKF, vibration…</text>
+ <text x="836" y="547" class="f">warnings.ts (exact Mission Planner rules)</text>
+
+ <rect x="820" y="578" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="600" class="t">⑦ Message severity</text><text x="1010" y="600" class="s">red / yellow / white, message log</text>
+ <text x="836" y="619" class="f">severity.ts</text>
+
+ <rect x="820" y="650" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="672" class="t">⑧ Liveness</text><text x="945" y="672" class="s">LIVE · STALE · OFFLINE, NOT LIVE overlay</text>
+ <text x="836" y="691" class="f">sources.ts · source.ts · ConnectBar.svelte</text>
+
+ <rect x="820" y="722" width="430" height="52" rx="8" class="lg"/>
+ <text x="836" y="744" class="t">⑨ Commands</text><text x="950" y="744" class="s">ARM · DISARM · mode, each confirmed</text>
+ <text x="836" y="763" class="f">VehicleCommands.svelte · linkB.ts</text>
+
+ <rect x="820" y="794" width="430" height="52" rx="8" class="lg" stroke-dasharray="6 3"/>
+ <text x="836" y="816" class="t">⑪ Loop pacing</text><text x="975" y="816" class="s">every timer in one place (MP's main loop)</text>
+ <text x="836" y="835" class="f">pacing.ts: gate 100 ms · clock 250 ms · map 300 ms · STALE 2 s</text>
+
+ <rect x="820" y="880" width="430" height="66" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="2"/>
+ <text x="836" y="903" class="t">OCS view</text><text x="920" y="903" class="s">no logic number: shown as the OCS sends it</text>
+ <text x="836" y="921" class="s">course, geofence, Task 4 items, run, preflight</text>
+ <text x="836" y="937" class="f">ocs.ts · linkC.ts · mapModel.ts (10 m checks)</text>
+</g>
+
+<!-- pills -> logic -->
+<g class="eb">
+ <path d="M730,169 C780,169 780,170 818,170" marker-end="url(#b)"/>
+ <path d="M730,219 C775,219 775,316 818,316" marker-end="url(#b)"/>
+ <path d="M730,269 C790,269 790,532 818,532" marker-end="url(#b)"/>
+ <path d="M730,319 C795,319 795,604 818,604" marker-end="url(#b)"/>
+ <path d="M730,369 C800,369 800,676 818,676" marker-end="url(#b)"/>
+ <path d="M730,419 C805,419 805,748 818,748" marker-end="url(#b)"/>
+ <path d="M818,762 C760,762 760,469 732,469" stroke-dasharray="5 3" marker-end="url(#b)"/>
+</g>
+<!-- inside column 3 -->
+<g fill="none" stroke="#d2a8ff" stroke-width="1.8">
+ <path d="M1035,206 L1035,216" marker-end="url(#p)"/>
+ <path d="M1250,316 C1280,316 1280,388 1252,388" marker-end="url(#p)"/>
+ <path d="M1250,326 C1295,326 1295,460 1252,460" marker-end="url(#p)"/>
+ <path d="M1250,336 C1310,336 1310,532 1252,532" marker-end="url(#p)"/>
+ <path d="M1250,340 C1325,340 1325,604 1252,604" marker-end="url(#p)"/>
+</g>
+<text x="1268" y="300" fill="#d2a8ff" font-size="11">snapshot</text>
+<path d="M820,820 C770,820 770,330 818,330" class="ed" marker-end="url(#w)"/>
+<path d="M1250,826 C1330,826 1330,745 1378,745" class="ed" marker-end="url(#w)"/>
+<g class="eg">
+ <path d="M730,879 C775,879 775,905 818,905" marker-end="url(#gr)"/>
+ <path d="M730,929 C775,929 775,925 818,925" marker-end="url(#gr)"/>
+ <path d="M818,940 C770,940 770,979 732,979" stroke-dasharray="5 3" marker-end="url(#gr)"/>
+</g>
+
+<!-- ================= column 4: panels ================= -->
+<g>
+ <rect x="1380" y="124" width="390" height="62" rx="8" fill="#161b22" stroke="#c9d1d9" stroke-width="2"/>
+ <text x="1396" y="148" class="t">Top bar</text>
+ <text x="1396" y="168" class="s">Vehicle backend / OCS badges · units choice</text>
+
+ <rect x="1380" y="200" width="390" height="92" rx="8" fill="#161b22" stroke="#c9d1d9" stroke-width="2"/>
+ <text x="1396" y="224" class="t">HUD</text>
+ <text x="1396" y="244" class="s">artificial horizon, heading, speed, altitude</text>
+ <text x="1396" y="262" class="s">NOT LIVE overlay when the data stops</text>
+
+ <rect x="1380" y="306" width="390" height="300" rx="8" fill="#161b22" stroke="#c9d1d9" stroke-width="2"/>
+ <text x="1396" y="330" class="t">Vehicle card (one per vehicle)</text>
+ <g class="s">
+  <text x="1396" y="354">• Connect bar: port, baud, Connect / Disconnect</text>
+  <text x="1396" y="378">• robot state AUTO / MANUAL, mode, flight phase</text>
+  <text x="1396" y="402">• alerts: only when something is wrong</text>
+  <text x="1396" y="426">• tiles: battery, GPS, link, speed, heading,</text>
+  <text x="1406" y="442">  altitude (UAV) or distance to waypoint (USV)</text>
+  <text x="1396" y="466">• vehicle message line + Messages log</text>
+  <text x="1396" y="490">• ARM · DISARM · mode buttons</text>
+  <text x="1396" y="514">• "All telemetry" (the full binding table)</text>
+  <text x="1396" y="538">• LIVE / STALE / OFFLINE badge, link problem</text>
+ </g>
+
+ <rect x="1380" y="640" width="390" height="120" rx="8" fill="#161b22" stroke="#c9d1d9" stroke-width="2"/>
+ <text x="1396" y="664" class="t">Map</text>
+ <text x="1396" y="686" class="s">vehicles + tracks, course, UAV geofence,</text>
+ <text x="1396" y="704" class="s">keep-out zones, moving object + 10 m ring,</text>
+ <text x="1396" y="722" class="s">red banner when a vehicle is too close</text>
+ <text x="1396" y="742" class="f">vehicle positions: status snapshot (②) · heading: ⓪</text>
+
+ <rect x="1380" y="800" width="390" height="150" rx="8" fill="#161b22" stroke="#c9d1d9" stroke-width="2"/>
+ <text x="1396" y="824" class="t">RoboCommand panel</text>
+ <text x="1396" y="846" class="s">connection, run, preflight checklist,</text>
+ <text x="1396" y="864" class="s">heartbeats per vehicle, command log,</text>
+ <text x="1396" y="882" class="s">Task 4 items and their replies,</text>
+ <text x="1396" y="900" class="s">Report ready button</text>
+</g>
+
+<!-- logic -> panels -->
+<g fill="none" stroke="#d2a8ff" stroke-width="2">
+ <path d="M1250,165 C1320,165 1320,230 1378,230" marker-end="url(#p)"/>
+ <path d="M1250,244 L1378,244" marker-end="url(#p)"/>
+ <path d="M1250,384 C1320,384 1320,410 1378,410" marker-end="url(#p)"/>
+ <path d="M1250,452 C1320,452 1320,270 1378,270" marker-end="url(#p)"/>
+ <path d="M1250,462 C1330,462 1330,430 1378,430" marker-end="url(#p)"/>
+ <path d="M1250,532 C1320,532 1320,402 1378,402" marker-end="url(#p)"/>
+ <path d="M1250,604 C1330,604 1330,466 1378,466" marker-end="url(#p)"/>
+ <path d="M1250,666 C1335,666 1335,538 1378,538" marker-end="url(#p)"/>
+ <path d="M1250,680 C1345,680 1345,160 1378,160" marker-end="url(#p)"/>
+ <path d="M1250,690 C1300,690 1300,262 1378,262" marker-end="url(#p)"/>
+ <path d="M1250,748 C1340,748 1340,490 1378,490" marker-end="url(#p)"/>
+</g>
+<g class="eg">
+ <path d="M1250,900 C1320,900 1320,720 1378,720" marker-end="url(#gr)"/>
+ <path d="M1250,914 L1378,880" marker-end="url(#gr)"/>
+</g>
+
+<!-- legend -->
+<rect x="20" y="1062" width="1760" height="120" rx="8" fill="#0d1117" stroke="#30363d"/>
+<g font-size="12.5" fill="#c9d1d9">
+ <line x1="40" y1="1090" x2="80" y2="1090" stroke="#58a6ff" stroke-width="2" marker-end="url(#b)"/><text x="88" y="1094">vehicle data (link B, from the C# backend)</text>
+ <line x1="400" y1="1090" x2="440" y2="1090" stroke="#3fb950" stroke-width="2" marker-end="url(#gr)"/><text x="448" y="1094">OCS data (link C, from main.py)</text>
+ <line x1="700" y1="1090" x2="740" y2="1090" stroke="#d2a8ff" stroke-width="2" marker-end="url(#p)"/><text x="748" y="1094">logic output to the screen</text>
+ <line x1="980" y1="1090" x2="1020" y2="1090" stroke="#8b949e" stroke-width="2" stroke-dasharray="5 3"/><text x="1028" y="1094">operator action going back / pacing (⑪ sets the timers of ⓪ ② ⑧ and the map)</text>
+ <text x="40" y="1122">Circled numbers are the logic items of MissionPlanner_dissected/CLAUDE.md. ③ ⑧ ⑨ run in the backend (blue box) and are what the display relies on; ⓪ ① ② ⑤ ⑥ ⑦ ⑩ ⑪ run in the browser.</text>
+ <text x="40" y="1144">④ (redraw on change) is covered by ⓪'s frame clock. Safety rule everywhere: a value that is not LIVE is shown dimmed with its age, never as current.</text>
+ <text x="40" y="1166">Mock mode (npm run dev:mock) feeds the same stores from mock.ts instead of links B and C, with a MOCK DATA banner; it never ships in a production build.</text>
+</g>
+</svg>

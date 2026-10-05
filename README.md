@@ -1,5 +1,15 @@
 Perusa onum Illa ethan flow :
 <img width="929" height="269" alt="image" src="https://github.com/user-attachments/assets/342c5e2f-2762-4aea-a485-051385c0b6c6" />
+<br>
+***Before everything install the dependencies and follow the below steps(easy peasy than)***
+run :
+```bash
+cd AQUAHOLICS-Communication
+./setup.sh
+conda activate aquaholics
+cd OCS_Application/MissionPlanner_dissected && ./start.sh
+```
+
 ***So for testing purpose, added the robocmd application that gives and asks status report for task and changes the course using commands (The Mission 3 interruption isn't added for now)*** <br>
 <br>
 *To run the RoboCmd Application read the README.md of that folder and do the same if wanna run OCS Application.*<br>

@@ -6,6 +6,7 @@ import { createGate, type Gate } from './gate';
 import { MESSAGE_LOG_MAX } from './severity';
 import { vehicleBackend, vehicles } from './sources';
 import type { BatteryParams } from './warnings';
+import type { Home, Waypoint } from './waypoints';
 
 // Logic 0: link B carries two channels per vehicle.
 //   FAST: roll/pitch/yaw, pushed only when the value changes (~20 Hz while moving).
@@ -102,7 +103,34 @@ export interface CmdAckMsg {
   t: number;
 }
 
-export type LinkBMsg = FastMsg | SlowMsg | ParamsMsg | StatusTextMsg | BackendMsg | ModesMsg | CmdAckMsg;
+/** Phase 3: mission transfer kind and progress (MissionCommands.cs). */
+export type MissionKind = 'mission_write' | 'mission_read';
+/** 'sending' is local (not yet confirmed by the backend); the rest come from the backend. */
+export type MissionStatus = 'sending' | 'sent' | 'progress' | 'accepted' | 'rejected' | 'timeout' | 'error';
+
+/** Phase 3: progress of a mission transfer: sent, zero or more progress (current/total climbing), then one final status. */
+export interface MissionAckMsg {
+  ch: 'missionack';
+  vehicle: VehicleId;
+  id: string;
+  cmd: MissionKind;
+  status: Exclude<MissionStatus, 'sending'>;
+  detail: string;
+  current?: number;
+  total?: number;
+  /** Sender clock, ms. */
+  t: number;
+}
+
+/** Phase 3: the downloaded mission, once per successful mission_read. */
+export interface MissionMsg {
+  ch: 'mission';
+  vehicle: VehicleId;
+  home: Home | null;
+  wps: Waypoint[];
+}
+
+export type LinkBMsg = FastMsg | SlowMsg | ParamsMsg | StatusTextMsg | BackendMsg | ModesMsg | CmdAckMsg | MissionAckMsg | MissionMsg;
 
 export const attitude: Record<VehicleId, AttitudeTrack> = Object.fromEntries(
   VEHICLES.map((id) => [id, new AttitudeTrack()]),
@@ -205,6 +233,49 @@ export function commandsLost(): void {
     );
 }
 
+/** Phase 3: progress of a mission transfer (parallel to CommandState, which has no progress counters). */
+export interface MissionOpState {
+  id: string;
+  cmd: MissionKind;
+  status: MissionStatus;
+  detail: string;
+  current?: number;
+  total?: number;
+  /** Local time of the last change, ms. */
+  at: number;
+}
+
+const missionOpStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<MissionOpState | undefined>(undefined)])) as Record<
+  VehicleId,
+  Writable<MissionOpState | undefined>
+>;
+
+/** The latest mission transfer per vehicle and how far it got (phase 3). */
+export const vehicleMissionOp: Record<VehicleId, Readable<MissionOpState | undefined>> = missionOpStores;
+
+/** A mission_write / mission_read just went out on link B (linkB.ts). */
+export function missionSending(vehicle: VehicleId, state: MissionOpState): void {
+  missionOpStores[vehicle].set(state);
+}
+
+/** A pending mission transfer can no longer be answered (link B closed). */
+export function missionOpsLost(): void {
+  for (const id of VEHICLES)
+    missionOpStores[id].update((c) =>
+      c && (c.status === 'sending' || c.status === 'sent' || c.status === 'progress')
+        ? { ...c, status: 'error', detail: 'connection to the vehicle backend lost: outcome unknown', at: Date.now() }
+        : c,
+    );
+}
+
+const missionStores = Object.fromEntries(VEHICLES.map((id) => [id, writable<MissionMsg | undefined>(undefined)])) as Record<
+  VehicleId,
+  Writable<MissionMsg | undefined>
+>;
+
+/** The vehicle's mission as last read from it (phase 3); undefined until a mission_read succeeds. */
+export const vehicleMission: Record<VehicleId, Readable<MissionMsg | undefined>> = missionStores;
+
 const portStore = writable<readonly SerialPortInfo[]>([]);
 
 /** Serial ports a vehicle can be connected to. */
@@ -275,6 +346,23 @@ export function handleLinkB(msg: LinkBMsg): void {
       detail: msg.detail,
       at: Date.now(),
     }));
+    return;
+  }
+  if (msg.ch === 'missionack') {
+    // Every display gets every mission transfer's progress; a page shows the latest per vehicle.
+    missionOpStores[msg.vehicle].set({
+      id: msg.id,
+      cmd: msg.cmd,
+      status: msg.status,
+      detail: msg.detail,
+      current: msg.current,
+      total: msg.total,
+      at: Date.now(),
+    });
+    return;
+  }
+  if (msg.ch === 'mission') {
+    missionStores[msg.vehicle].set(msg);
     return;
   }
   if (msg.ch === 'att') {

@@ -7,13 +7,16 @@
   // optional) and map/base.json (the offline course image/tiles, same as the dashboard map).
   import 'leaflet/dist/leaflet.css';
   import L from 'leaflet';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { VEHICLES, VEHICLE_TYPE, type VehicleId } from '../lib/config';
+  import { sendMissionRead, sendMissionWrite } from '../lib/linkB';
   import { distanceM, vehiclePosition, type LatLng } from '../lib/mapModel';
   import { MAVCMD } from '../lib/mavcmd';
+  import { MOCK } from '../lib/mode';
   import { ocsState } from '../lib/ocs';
-  import { vehicleState } from '../lib/telemetry';
+  import { vehicles } from '../lib/sources';
+  import { vehicleMission, vehicleMissionOp, vehicleState, type MissionOpState, type MissionStatus } from '../lib/telemetry';
   import {
     CMD,
     CMD_SET,
@@ -82,6 +85,25 @@
   let cursor: LatLng | null = $state(null);
   /** Right-click menu (MP contextMenuStrip1), at a container pixel, for a map point and maybe a waypoint. */
   let menu: { x: number; y: number; at: LatLng; wp: number | null } | null = $state(null);
+
+  // Phase 3: Read/Write mission through the vehicle backend (VehicleCommands.svelte's confirm pattern).
+  const status = $derived(vehicles[vehicle].status);
+  const live = $derived($status.state === 'live');
+  const missionOp = $derived(vehicleMissionOp[vehicle]);
+  const missionPending = $derived($missionOp?.status === 'sending' || $missionOp?.status === 'sent' || $missionOp?.status === 'progress');
+  const canMission = $derived(!MOCK && live && !missionPending);
+  const missionMsg = $derived(vehicleMission[vehicle]);
+
+  interface MissionAsk {
+    op: 'write' | 'read';
+    title: string;
+    lines: string[];
+    warnings: string[];
+    action: string;
+  }
+  let missionAsk: MissionAsk | null = $state(null);
+  let missionDialog: HTMLDialogElement | undefined = $state();
+  let missionCancelButton: HTMLButtonElement | undefined = $state();
 
   // Logic 12: MP keeps the map view in Settings (maplast_lat/lng/zoom) and the map type (MapType).
   // Here per browser; reading or writing may fail (private window), then the defaults apply.
@@ -338,6 +360,67 @@
 
   const fmt = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(0)} m`);
 
+  // Phase 3: Read/Write mission, confirmed through a dialog (VehicleCommands.svelte's pattern:
+  // every command that can change the vehicle's mission needs an explicit confirmation).
+  async function openMission(op: 'write' | 'read') {
+    const lines: string[] = [];
+    const warnings: string[] = [];
+    if (op === 'write') {
+      lines.push(`${wps.length} waypoint(s), ${fmt(distance)}${home ? '' : ', home not set'}.`);
+      warnings.push(`This overwrites ${vehicle}'s current mission on the Pixhawk.`);
+    } else if (wps.length > 0 || home) {
+      lines.push(`This replaces the ${wps.length} waypoint(s) on the plan with ${vehicle}'s mission.`);
+    } else {
+      lines.push(`Loads ${vehicle}'s mission into the plan.`);
+    }
+    const verb = op === 'write' ? `Write mission to ${vehicle}` : `Read mission from ${vehicle}`;
+    missionAsk = { op, title: `${verb}?`, lines, warnings, action: verb.toUpperCase() };
+    await tick(); // the dialog's buttons exist only after this render
+    missionDialog?.showModal();
+    missionCancelButton?.focus(); // Enter or Space on a stray key press cancels
+  }
+
+  function confirmMission() {
+    if (missionAsk && canMission) {
+      if (missionAsk.op === 'write') sendMissionWrite(vehicle, home, wps);
+      else sendMissionRead(vehicle);
+    }
+    closeMission();
+  }
+
+  function closeMission() {
+    missionDialog?.close();
+    missionAsk = null;
+  }
+
+  const MISSION_LABEL: Record<Exclude<MissionStatus, 'sending' | 'progress'>, string> = {
+    sent: 'SENT, waiting for the vehicle…',
+    accepted: 'ACCEPTED',
+    rejected: 'REJECTED',
+    timeout: 'NO ANSWER',
+    error: 'NOT SENT',
+  };
+  const missionLabel = (m: MissionOpState): string =>
+    m.status === 'sending'
+      ? 'SENDING…'
+      : m.status === 'progress'
+        ? `${m.current ?? 0}/${m.total ?? 0} ${m.cmd === 'mission_write' ? 'uploaded' : 'downloaded'}`
+        : MISSION_LABEL[m.status];
+  const missionVerb = (m: MissionOpState) => (m.cmd === 'mission_write' ? 'Write' : 'Read');
+  const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour12: false });
+
+  $effect(() => {
+    // Read from vehicle: load a freshly downloaded mission into the plan, same as load()'s file-import tail.
+    const m = $missionMsg;
+    if (!m) return;
+    wps = m.wps;
+    home = m.home;
+    selected = -1;
+    message = `Loaded ${m.wps.length} waypoint(s) from ${vehicle}`;
+    const pts = route(home, wps);
+    if (pts.length > 0 && map) map.fitBounds(L.latLngBounds(pts), { padding: [40, 40] });
+  });
+
   $effect(() => {
     // Re-draw whenever the plan, selection or checks change.
     void [wps.map((w) => [w.cmd, w.lat, w.lng]), home, selected, issues];
@@ -547,17 +630,44 @@
       {#if message}<div class="small">{message}</div>{/if}
 
       <div class="buttons">
-        <button disabled title="Next phase: needs the vehicle backend">Read from vehicle</button>
-        <button disabled title="Next phase: needs the vehicle backend">Write to vehicle</button>
+        <button disabled={!canMission} onclick={() => openMission('read')}>Read from vehicle</button>
+        <button disabled={!canMission} onclick={() => openMission('write')}>Write to vehicle</button>
         <button onclick={addRow} title="Add a row below the selected one (for DO_ / CONDITION_ commands)">Add row</button>
         <button onclick={save} disabled={wps.length === 0 && !home}>Save .waypoints</button>
         <button onclick={() => fileInput.click()}>Load .waypoints</button>
         <button onclick={clear} disabled={wps.length === 0}>Clear</button>
         <input bind:this={fileInput} type="file" accept=".waypoints,.txt,.wpl" onchange={load} hidden />
       </div>
+      {#if MOCK}
+        <div class="hint">Mission transfer: real mode only</div>
+      {:else if !live}
+        <div class="hint">Mission transfer needs a LIVE vehicle</div>
+      {/if}
+      {#if $missionOp}
+        <div class="last {$missionOp.status}">
+          <span class="mono">{clock($missionOp.at)}</span>
+          {missionVerb($missionOp)}: <b>{missionLabel($missionOp)}</b>
+          {#if $missionOp.detail && $missionOp.status !== 'sent' && $missionOp.status !== 'progress' && $missionOp.status !== 'accepted'}
+            <span class="detail">({$missionOp.detail})</span>
+          {/if}
+        </div>
+      {/if}
     </aside>
   </div>
 </div>
+
+<dialog bind:this={missionDialog} onclose={() => (missionAsk = null)}>
+  {#if missionAsk}
+    <h3>{missionAsk.title}</h3>
+    {#each missionAsk.lines as line (line)}<p>{line}</p>{/each}
+    {#each missionAsk.warnings as w (w)}<p class="warning">{w}</p>{/each}
+    {#if !canMission}<p class="warning">Not possible now: the vehicle is not LIVE or a transfer is still waiting.</p>{/if}
+    <div class="dialog-buttons">
+      <button bind:this={missionCancelButton} onclick={closeMission}>Cancel</button>
+      <button class="confirm" disabled={!canMission} onclick={confirmMission}>{missionAsk.action}</button>
+    </div>
+  {/if}
+</dialog>
 
 <style>
   .planner {
@@ -592,6 +702,67 @@
   }
   .small {
     font-size: 0.8rem;
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  .last {
+    font-size: 0.8rem;
+  }
+  .last .detail {
+    color: var(--muted);
+  }
+  .last.sending,
+  .last.sent,
+  .last.progress {
+    color: var(--connecting);
+  }
+  .last.accepted {
+    color: var(--live);
+  }
+  .last.rejected,
+  .last.timeout,
+  .last.error {
+    color: var(--offline);
+  }
+  dialog {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--stale);
+    border-radius: 6px;
+    max-width: 26rem;
+    padding: 1rem 1.2rem;
+  }
+  dialog::backdrop {
+    background: rgb(0 0 0 / 0.6);
+  }
+  dialog h3 {
+    margin: 0 0 0.6rem;
+  }
+  dialog p {
+    margin: 0.3rem 0;
+    font-size: 0.9rem;
+  }
+  dialog .warning {
+    color: var(--stale);
+    font-weight: 600;
+  }
+  .dialog-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+  }
+  .dialog-buttons button {
+    font-size: 0.9rem;
+    padding: 0.35rem 0.9rem;
+  }
+  .dialog-buttons .confirm:not(:disabled) {
+    background: var(--stale);
+    border-color: var(--stale);
+    color: #000;
+    font-weight: 700;
   }
   .main {
     flex: 1;

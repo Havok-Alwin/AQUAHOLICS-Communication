@@ -8,9 +8,19 @@
 import type { VehicleId } from './config';
 import { LINK_B_RECONNECT_MS } from './pacing';
 import { vehicleBackend } from './sources';
-import { clearVehicleLinks, commandSending, commandsLost, handleLinkB, type CommandKind, type LinkBMsg } from './telemetry';
+import {
+  clearVehicleLinks,
+  commandSending,
+  commandsLost,
+  handleLinkB,
+  missionOpsLost,
+  missionSending,
+  type CommandKind,
+  type LinkBMsg,
+} from './telemetry';
+import type { Home, Waypoint } from './waypoints';
 
-const CHANNELS = new Set(['att', 'status', 'params', 'statustext', 'backend', 'modes', 'cmdack']);
+const CHANNELS = new Set(['att', 'status', 'params', 'statustext', 'backend', 'modes', 'cmdack', 'missionack', 'mission']);
 
 let socket: WebSocket | undefined;
 let commandCounter = 0;
@@ -44,6 +54,28 @@ export function sendCommand(vehicle: VehicleId, cmd: CommandKind, mode?: string)
   const id = nextId();
   commandSending(vehicle, { id, cmd, mode, status: 'sending', detail: '', at: Date.now() });
   return sendRaw({ ch: 'cmd', id, vehicle, cmd, ...(mode !== undefined ? { mode } : {}) });
+}
+
+/**
+ * Writes the planner's mission to the vehicle (phase 3), overwriting whatever mission it has.
+ * The caller has already asked the operator to confirm. Returns false if link B is not open.
+ */
+export function sendMissionWrite(vehicle: VehicleId, home: Home | null, wps: Waypoint[]): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  const id = nextId();
+  missionSending(vehicle, { id, cmd: 'mission_write', status: 'sending', detail: '', at: Date.now() });
+  return sendRaw({ ch: 'mission_write', id, vehicle, home, wps });
+}
+
+/**
+ * Reads the vehicle's mission back into the planner (phase 3). The caller has already asked the
+ * operator to confirm when this would replace an existing plan. Returns false if link B is not open.
+ */
+export function sendMissionRead(vehicle: VehicleId): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  const id = nextId();
+  missionSending(vehicle, { id, cmd: 'mission_read', status: 'sending', detail: '', at: Date.now() });
+  return sendRaw({ ch: 'mission_read', id, vehicle });
 }
 
 function linkBUrl(): string {
@@ -84,6 +116,7 @@ export function startLinkB(): () => void {
       vehicleBackend.setConnected(false);
       clearVehicleLinks();
       commandsLost();
+      missionOpsLost();
       if (stopped) return;
       retry = setTimeout(connect, delay);
       delay = Math.min(delay * 2, LINK_B_RECONNECT_MS.max);

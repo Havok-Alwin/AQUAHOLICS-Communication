@@ -88,6 +88,8 @@ public sealed class VehicleLink : IDisposable
     private BatteryParams? _params;
     private VehicleCommands? _commands;
     private readonly ConcurrentQueue<VehicleCommand> _commandQueue = new();
+    private MissionCommands? _missions;
+    private readonly ConcurrentQueue<MissionJob> _missionQueue = new();
     private DateTime _retryAt = DateTime.MinValue;
     private DateTime _lastHeartbeatSent = DateTime.MinValue;
     private LinkState _state = LinkState.Closed;
@@ -177,6 +179,13 @@ public sealed class VehicleLink : IDisposable
     /// Raised on the link thread, or on the caller's thread for an immediate refusal.</summary>
     public event Action<VehicleLink, CommandUpdate>? CommandUpdated;
 
+    /// <summary>Progress of every mission transfer (phase 3): "sent", "progress"*, then one final
+    /// status. Raised on the link thread, or on the caller's thread for an immediate refusal.</summary>
+    public event Action<VehicleLink, MissionUpdate>? MissionUpdated;
+
+    /// <summary>The downloaded mission, raised once on a successful mission_read.</summary>
+    public event Action<VehicleLink, MissionResult>? MissionResultReady;
+
     /// <summary>The connected vehicle's flight modes (MP's names for its firmware), on connect.</summary>
     public event Action<VehicleLink, IReadOnlyList<string>>? ModesChanged;
 
@@ -195,6 +204,20 @@ public sealed class VehicleLink : IDisposable
             CommandUpdated?.Invoke(this, new CommandUpdate(cmd.Id, cmd.Kind, "error", $"vehicle link is {State.ToString().ToUpperInvariant()}, not LIVE"));
         else
             _commandQueue.Enqueue(cmd);
+    }
+
+    /// <summary>
+    /// Queues a mission transfer for the link thread (phase 3). Refused at once if the kind is
+    /// unknown or the link is not LIVE, the same shape as Submit. Thread-safe.
+    /// </summary>
+    public void SubmitMission(MissionJob job)
+    {
+        if (Array.IndexOf(MissionCommands.Kinds, job.Kind) < 0)
+            MissionUpdated?.Invoke(this, new MissionUpdate(job.Id, job.Kind, "error", $"unknown command '{job.Kind}'"));
+        else if (State != LinkState.Live)
+            MissionUpdated?.Invoke(this, new MissionUpdate(job.Id, job.Kind, "error", $"vehicle link is {State.ToString().ToUpperInvariant()}, not LIVE"));
+        else
+            _missionQueue.Enqueue(job);
     }
 
     /// <summary>The five battery parameters (logic 6), on connect and on every change.</summary>
@@ -286,6 +309,14 @@ public sealed class VehicleLink : IDisposable
                 CommandUpdated?.Invoke(this, new CommandUpdate(cmd.Id, cmd.Kind, "error", $"vehicle link is {State.ToString().ToUpperInvariant()}, not LIVE"));
         }
         _commands!.Tick();
+        while (_missionQueue.TryDequeue(out var job))
+        {
+            if (State == LinkState.Live)
+                _missions!.Start(job);
+            else
+                MissionUpdated?.Invoke(this, new MissionUpdate(job.Id, job.Kind, "error", $"vehicle link is {State.ToString().ToUpperInvariant()}, not LIVE"));
+        }
+        _missions!.Tick();
         SendGcsHeartbeat(mav);
 
         var silent = DateTime.UtcNow - mav.MAV.lastvalidpacket;
@@ -354,13 +385,16 @@ public sealed class VehicleLink : IDisposable
         batt.Changed += p => ParamsChanged?.Invoke(this, p);
         var commands = new VehicleCommands(mav, sysid, mav.MAV.compid, u => CommandUpdated?.Invoke(this, u),
                                            Cfg.CommandTimeout, Cfg.ArmTimeout);
-        mav.OnPacketReceived += (_, msg) => OnPacket(msg, sysid, mav.MAV.compid, batt, commands);
+        var missions = new MissionCommands(mav, sysid, mav.MAV.compid, u => MissionUpdated?.Invoke(this, u),
+                                           r => MissionResultReady?.Invoke(this, r), Cfg.CommandTimeout);
+        mav.OnPacketReceived += (_, msg) => OnPacket(msg, sysid, mav.MAV.compid, batt, commands, missions);
         lock (_lock)
         {
             _mav = mav;
             _rates = new StreamRates(mav);
             _params = batt;
             _commands = commands;
+            _missions = missions;
         }
         Modes = VehicleCommands.ModesOf(mav);
         ModesChanged?.Invoke(this, Modes);
@@ -370,12 +404,13 @@ public sealed class VehicleLink : IDisposable
     }
 
     // Runs inside mav.readPacket(), on the link thread.
-    private void OnPacket(MAVLink.MAVLinkMessage msg, byte sysid, byte compid, BatteryParams batt, VehicleCommands commands)
+    private void OnPacket(MAVLink.MAVLinkMessage msg, byte sysid, byte compid, BatteryParams batt, VehicleCommands commands, MissionCommands missions)
     {
         try
         {
             batt.OnPacket(msg);
             commands.OnPacket(msg);
+            missions.OnPacket(msg);
             PacketReceived?.Invoke(this, msg);
             // Autopilot only, like MP (its cs.messages are per sysid/compid). One packet, one entry:
             // ArduPilot's texts fit in one packet, so MAVLink 2 chunking (id/chunk_seq) is not joined.
@@ -421,18 +456,24 @@ public sealed class VehicleLink : IDisposable
     {
         MAVLinkInterface? old;
         VehicleCommands? commands;
+        MissionCommands? missions;
         lock (_lock)
         {
             old = _mav;
             commands = _commands;
+            missions = _missions;
             _mav = null;
             _rates = null;
             _params = null;
             _commands = null;
+            _missions = null;
         }
         commands?.Abort("vehicle link closed");
+        missions?.Abort("vehicle link closed");
         while (_commandQueue.TryDequeue(out var cmd))
             CommandUpdated?.Invoke(this, new CommandUpdate(cmd.Id, cmd.Kind, "error", "vehicle link closed"));
+        while (_missionQueue.TryDequeue(out var job))
+            MissionUpdated?.Invoke(this, new MissionUpdate(job.Id, job.Kind, "error", "vehicle link closed"));
         if (old != null)
         {
             Modes = Array.Empty<string>();

@@ -8,10 +8,17 @@
 //              1 Hz and on every link change (ports: link B only)
 //   modes      {ch:'modes', vehicle, modes:[...]}               logic 9: on connect (MP's names)
 //   cmdack     {ch:'cmdack', vehicle, id, cmd, status, detail, t} logic 9: every command update
+//   missionack {ch:'missionack', vehicle, id, cmd, status, detail, current, total, t}
+//              phase 3: every mission transfer update (sent, progress*, then one final status)
+//   mission    {ch:'mission', vehicle, home:{lat,lng,alt}|null, wps:[{cmd,frame,p:[p1..p4],lat,lng,alt}]}
+//              phase 3: the downloaded mission, once per successful mission_read
 // Frontend -> backend (logic 9):
 //   cmd        {ch:'cmd', id, vehicle, cmd:'arm'|'disarm'|'mode', mode?}
 //   connect    {ch:'connect', id, vehicle, port, baud, sysid?}   connect a vehicle slot to a port
 //   disconnect {ch:'disconnect', id, vehicle}                    answered with cmdack (cmd connect/disconnect)
+// Frontend -> backend (phase 3):
+//   mission_write {ch:'mission_write', id, vehicle, home:{lat,lng,alt}|null, wps:[{cmd,frame,p,lat,lng,alt}]}
+//   mission_read  {ch:'mission_read', id, vehicle}               both answered with missionack
 using System.Reflection;
 using System.Text.Json;
 using MissionPlanner;
@@ -111,6 +118,60 @@ public static class LinkBMessages
         w.WriteString("status", u.Status);
         w.WriteString("detail", u.Detail);
         w.WriteNumber("t", t);
+    });
+
+    public static byte[] MissionAck(string vehicle, MissionUpdate u, long t) => Write(w =>
+    {
+        w.WriteString("ch", "missionack");
+        w.WriteString("vehicle", vehicle);
+        w.WriteString("id", u.Id);
+        w.WriteString("cmd", u.Kind);
+        w.WriteString("status", u.Status);
+        w.WriteString("detail", u.Detail);
+        w.WriteNumber("current", u.Current);
+        w.WriteNumber("total", u.Total);
+        w.WriteNumber("t", t);
+    });
+
+    /// <summary>Item 0 of a successful read is home (frame 0, per toWpl's convention); the rest are wps.</summary>
+    public static byte[] Mission(string vehicle, MissionResult r) => Write(w =>
+    {
+        w.WriteString("ch", "mission");
+        w.WriteString("vehicle", vehicle);
+        var items = r.Items;
+        var hasHome = items.Count > 0 && items[0].Frame == 0;
+        if (hasHome)
+        {
+            var h = items[0];
+            w.WriteStartObject("home");
+            w.WriteNumber("lat", h.Lat);
+            w.WriteNumber("lng", h.Lng);
+            w.WriteNumber("alt", h.Alt);
+            w.WriteEndObject();
+        }
+        else
+        {
+            w.WriteNull("home");
+        }
+        w.WriteStartArray("wps");
+        for (var i = hasHome ? 1 : 0; i < items.Count; i++)
+        {
+            var wp = items[i];
+            w.WriteStartObject();
+            w.WriteNumber("cmd", wp.Cmd);
+            w.WriteNumber("frame", wp.Frame);
+            w.WriteStartArray("p");
+            w.WriteNumberValue(wp.P1);
+            w.WriteNumberValue(wp.P2);
+            w.WriteNumberValue(wp.P3);
+            w.WriteNumberValue(wp.P4);
+            w.WriteEndArray();
+            w.WriteNumber("lat", wp.Lat);
+            w.WriteNumber("lng", wp.Lng);
+            w.WriteNumber("alt", wp.Alt);
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
     });
 
     public static byte[] Backend(long t, IEnumerable<VehicleLink> links, IReadOnlyList<SerialPortInfo>? ports = null) => Write(w =>

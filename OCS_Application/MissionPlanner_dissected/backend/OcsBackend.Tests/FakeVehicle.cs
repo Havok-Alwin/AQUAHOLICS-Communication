@@ -60,6 +60,23 @@ public sealed class FakeVehicle : IDisposable
     /// <summary>Rover custom mode in the heartbeat (0 Manual, 4 Hold, 10 Auto).</summary>
     public volatile uint CustomMode;
 
+    // Phase 3: mission transfer. Answer MISSION_COUNT (write) by requesting each item in turn and
+    // MISSION_REQUEST_LIST (read) by serving MissionToDownload, like a real autopilot's mission protocol.
+
+    /// <summary>Answer MISSION_COUNT / MISSION_REQUEST_LIST at all; false simulates a silent vehicle (timeout).</summary>
+    public volatile bool MissionResponding = true;
+
+    /// <summary>Reject the write (MISSION_ACK DENIED) once this many items have arrived; -1 accepts all.</summary>
+    public volatile int RejectWriteAfter = -1;
+
+    /// <summary>Items offered to the GCS for a mission_read (home at index 0 if present).</summary>
+    public List<MAVLink.mavlink_mission_item_int_t> MissionToDownload { get; set; } = new();
+
+    /// <summary>Items received from a mission_write, in arrival order.</summary>
+    public List<MAVLink.mavlink_mission_item_int_t> MissionWritten { get; } = new();
+
+    private ushort _missionWriteCount;
+
     public FakeVehicle(byte sysid = 1, int periodMs = 50)
     {
         _sysid = sysid;
@@ -89,24 +106,93 @@ public sealed class FakeVehicle : IDisposable
         MAVLink.MAVLinkMessage? msg;
         try { msg = new MAVLink.MavlinkParse().ReadPacket(new MemoryStream(bytes)); }
         catch { return; }
-        if (msg != null && msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.COMMAND_LONG)
+        if (msg == null)
+            return;
+        if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.COMMAND_LONG)
         {
             OnCommand(msg.ToStructure<MAVLink.mavlink_command_long_t>());
             return;
         }
-        if (msg == null || msg.msgid != (uint)MAVLink.MAVLINK_MSG_ID.PARAM_REQUEST_READ)
-            return;
-        var req = msg.ToStructure<MAVLink.mavlink_param_request_read_t>();
-        var name = System.Text.Encoding.UTF8.GetString(req.param_id).TrimEnd('\0');
-        float value;
-        lock (Params)
+        if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.PARAM_REQUEST_READ)
         {
-            ParamRequests.Add(name);
-            if (!Params.TryGetValue(name, out value))
-                return;
+            var req = msg.ToStructure<MAVLink.mavlink_param_request_read_t>();
+            var name = System.Text.Encoding.UTF8.GetString(req.param_id).TrimEnd('\0');
+            float value;
+            lock (Params)
+            {
+                ParamRequests.Add(name);
+                if (!Params.TryGetValue(name, out value))
+                    return;
+            }
+            SendParam(name, value);
+            return;
         }
-        SendParam(name, value);
+        if (!MissionResponding)
+            return;  // simulate a silent vehicle, for a mission timeout test
+        if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_COUNT)
+        {
+            OnMissionCount(msg.ToStructure<MAVLink.mavlink_mission_count_t>().count);
+            return;
+        }
+        if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ITEM_INT)
+        {
+            OnMissionItem(msg.ToStructure<MAVLink.mavlink_mission_item_int_t>());
+            return;
+        }
+        if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_LIST)
+        {
+            SendMissionCount((ushort)MissionToDownload.Count);
+            return;
+        }
+        if (msg.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT)
+        {
+            var seq = msg.ToStructure<MAVLink.mavlink_mission_request_int_t>().seq;
+            if (seq < MissionToDownload.Count)
+                SendMissionItem(MissionToDownload[seq]);
+        }
     }
+
+    private void OnMissionCount(ushort count)
+    {
+        MissionWritten.Clear();
+        _missionWriteCount = count;
+        if (count == 0)
+        {
+            SendMissionAck(MAVLink.MAV_MISSION_RESULT.MAV_MISSION_ACCEPTED);
+            return;
+        }
+        RequestMissionItem(0);
+    }
+
+    private void OnMissionItem(MAVLink.mavlink_mission_item_int_t item)
+    {
+        if (item.seq != MissionWritten.Count)
+            return;  // out of order or a duplicate: ignore, the GCS's own retry resends it
+        MissionWritten.Add(item);
+        if (RejectWriteAfter >= 0 && MissionWritten.Count > RejectWriteAfter)
+        {
+            SendMissionAck(MAVLink.MAV_MISSION_RESULT.MAV_MISSION_DENIED);
+            return;
+        }
+        if (MissionWritten.Count < _missionWriteCount)
+            RequestMissionItem((ushort)MissionWritten.Count);
+        else
+            SendMissionAck(MAVLink.MAV_MISSION_RESULT.MAV_MISSION_ACCEPTED);
+    }
+
+    /// <summary>Asks the GCS for a mission item; exposed so a test can simulate the vehicle re-asking
+    /// for one it already has (robustness), bypassing this class's own bookkeeping.</summary>
+    public void RequestMissionItem(ushort seq) => Send(MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT,
+        new MAVLink.mavlink_mission_request_int_t { seq = seq, target_system = 255, target_component = 190 });
+
+    private void SendMissionCount(ushort count) => Send(MAVLink.MAVLINK_MSG_ID.MISSION_COUNT,
+        new MAVLink.mavlink_mission_count_t { count = count, target_system = 255, target_component = 190 });
+
+    private void SendMissionItem(MAVLink.mavlink_mission_item_int_t item) =>
+        Send(MAVLink.MAVLINK_MSG_ID.MISSION_ITEM_INT, item);
+
+    private void SendMissionAck(MAVLink.MAV_MISSION_RESULT result) => Send(MAVLink.MAVLINK_MSG_ID.MISSION_ACK,
+        new MAVLink.mavlink_mission_ack_t { type = (byte)result, target_system = 255, target_component = 190 });
 
     private void OnCommand(MAVLink.mavlink_command_long_t cmd)
     {

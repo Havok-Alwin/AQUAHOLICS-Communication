@@ -28,6 +28,7 @@ public sealed class LinkBHub : IDisposable
     private readonly Dictionary<string, (float r, float p, float y)> _lastAtt = new();
     private readonly Dictionary<string, byte[]> _lastAttMsg = new();
     private readonly Dictionary<string, byte[]> _modes = new();
+    private readonly Dictionary<string, byte[]> _missions = new();
     private readonly Timer _slowTimer, _backendTimer;
 
     private readonly VehicleSettings? _settings;
@@ -52,6 +53,8 @@ public sealed class LinkBHub : IDisposable
             link.StateChanged += (_, _) => PostBackend();
             link.ModesChanged += OnModes;
             link.CommandUpdated += OnCommandUpdate;
+            link.MissionUpdated += OnMissionUpdate;
+            link.MissionResultReady += OnMissionResult;
         }
         var slow = slowPeriod ?? TimeSpan.FromMilliseconds(500);  // LINK_B.slowHz = 2
         var backend = backendPeriod ?? TimeSpan.FromSeconds(1);
@@ -128,20 +131,42 @@ public sealed class LinkBHub : IDisposable
     /// <summary>Every reply to a connect / disconnect from a display (also sent to the displays as cmdack).</summary>
     public event Action<VehicleLink, CommandUpdate>? ConnectReplied;
 
+    // Phase 3: every mission transfer update reaches every operator display, in order (a log, like cmdack).
+    private void OnMissionUpdate(VehicleLink link, MissionUpdate u)
+    {
+        var msg = LinkBMessages.MissionAck(link.Name, u, LinkBMessages.Now());
+        lock (_lock)
+            foreach (var client in _clients)
+                client.PostLog(msg);
+    }
+
+    private void OnMissionResult(VehicleLink link, MissionResult r)
+    {
+        var msg = LinkBMessages.Mission(link.Name, r);
+        lock (_lock)
+            _missions[link.Name] = msg;
+        PostLatest($"mission:{link.Name}", msg);
+    }
+
     private void RefreshPorts()
     {
         try { _ports = _listPorts(); }
         catch (Exception e) { Console.Error.WriteLine($"link B: port listing failed: {e.Message}"); }
     }
 
+    // Cap a mission_write payload well above any real mission, before it ever touches MAVLink.
+    private const int MaxMissionItems = 500;
+
     /// <summary>
-    /// A message from a frontend: `cmd` (logic 9) or `connect` / `disconnect` (choose a vehicle's port
-    /// from the display). A malformed one is ignored (logged).
+    /// A message from a frontend: `cmd` (logic 9), `connect` / `disconnect` (choose a vehicle's port
+    /// from the display), or `mission_write` / `mission_read` (phase 3). A malformed one is ignored
+    /// (logged).
     /// </summary>
     internal void OnClientMessage(string text)
     {
         string? ch, id = null, vehicle = null, kind = null, mode = null, port = null;
         int? baud = null, sysid = null;
+        List<MissionItem>? missionItems = null;
         try
         {
             using var doc = JsonDocument.Parse(text);
@@ -156,6 +181,10 @@ public sealed class LinkBHub : IDisposable
             port = Str(root, "port");
             baud = Int(root, "baud");
             sysid = Int(root, "sysid");
+            // The waypoint array needs its own walk (it does not fit the Str/Int scalar helpers),
+            // and JsonElement is only valid while `doc` is alive, so this runs inside the try.
+            if (ch == "mission_write")
+                missionItems = ParseMissionItems(root);
         }
         catch (JsonException)
         {
@@ -164,6 +193,11 @@ public sealed class LinkBHub : IDisposable
         if (ch is "connect" or "disconnect")
         {
             OnConnect(ch, id, vehicle, port, baud, sysid);
+            return;
+        }
+        if (ch is "mission_write" or "mission_read")
+        {
+            OnMission(ch, id, vehicle, missionItems);
             return;
         }
         if (ch != "cmd")
@@ -236,6 +270,73 @@ public sealed class LinkBHub : IDisposable
         Reply("accepted", $"connecting to {port}");
     }
 
+    // Phase 3: mission_read / mission_write from a display, queued on the vehicle's link.
+    private void OnMission(string ch, string? id, string? vehicle, List<MissionItem>? items)
+    {
+        var link = _links.FirstOrDefault(l => l.Name == vehicle);
+        if (link == null || string.IsNullOrEmpty(id) || id.Length > 64)
+        {
+            Console.Error.WriteLine($"link B: ignored a malformed {ch} (vehicle {vehicle}, id {id})");
+            return;
+        }
+        if (ch == "mission_read")
+        {
+            link.SubmitMission(new MissionJob(id, "mission_read"));
+            return;
+        }
+        if (items == null)
+        {
+            Console.Error.WriteLine($"link B: ignored a malformed mission_write (vehicle {vehicle}, id {id})");
+            return;
+        }
+        link.SubmitMission(new MissionJob(id, "mission_write", items));
+    }
+
+    /// <summary>
+    /// mission_write's optional "home" and its "wps" array, home first (seq 0, frame 0). Null on any
+    /// malformed shape or an over-long array; the caller logs and ignores it rather than touching
+    /// MAVLink with unchecked data.
+    /// </summary>
+    private static List<MissionItem>? ParseMissionItems(JsonElement root)
+    {
+        try
+        {
+            if (!root.TryGetProperty("wps", out var wps) || wps.ValueKind != JsonValueKind.Array)
+                return null;
+            if (wps.GetArrayLength() > MaxMissionItems)
+                return null;
+            var items = new List<MissionItem>();
+            if (root.TryGetProperty("home", out var home) && home.ValueKind == JsonValueKind.Object)
+            {
+                items.Add(new MissionItem(0, 0, (ushort)MAVLink.MAV_CMD.WAYPOINT, 0, 0, 0, 0,
+                    home.GetProperty("lat").GetDouble(), home.GetProperty("lng").GetDouble(),
+                    (float)home.GetProperty("alt").GetDouble()));
+            }
+            else if (home.ValueKind != JsonValueKind.Undefined && home.ValueKind != JsonValueKind.Null)
+            {
+                return null;  // "home" present but neither an object nor null
+            }
+            var seq = (ushort)items.Count;
+            foreach (var w in wps.EnumerateArray())
+            {
+                var p = w.GetProperty("p");
+                if (p.ValueKind != JsonValueKind.Array || p.GetArrayLength() != 4)
+                    return null;
+                items.Add(new MissionItem(seq++,
+                    (byte)w.GetProperty("frame").GetInt32(),
+                    (ushort)w.GetProperty("cmd").GetInt32(),
+                    (float)p[0].GetDouble(), (float)p[1].GetDouble(), (float)p[2].GetDouble(), (float)p[3].GetDouble(),
+                    w.GetProperty("lat").GetDouble(), w.GetProperty("lng").GetDouble(),
+                    (float)w.GetProperty("alt").GetDouble()));
+            }
+            return items;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     private void PostStatus()
     {
         foreach (var link in _links)
@@ -275,6 +376,8 @@ public sealed class LinkBHub : IDisposable
                 client.PostLatest($"att:{name}", msg);
             foreach (var (name, msg) in _modes)
                 client.PostLatest($"modes:{name}", msg);
+            foreach (var (name, msg) in _missions)
+                client.PostLatest($"mission:{name}", msg);
             foreach (var history in _history.Values)
                 foreach (var msg in history)
                     client.PostLog(msg);

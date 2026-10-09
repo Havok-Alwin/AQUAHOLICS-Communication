@@ -1,3 +1,4 @@
+
 from dataclasses import dataclass
 from enum import Enum
 
@@ -26,10 +27,12 @@ class WorldObject:
     last_seen_s: float
 
     observation_count: int
-
     status: WorldObjectStatus
-
     last_track_id: int | None
+
+    classification_evidence: tuple[
+        tuple[MarkerType, float, int], ...
+    ] = ()
 
 
 @dataclass(frozen=True)
